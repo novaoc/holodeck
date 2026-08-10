@@ -32,6 +32,12 @@ func githubTar(t *testing.T, entries ...tarEntry) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{
+		Name: "pax_global_header", Typeflag: tar.TypeXGlobalHeader,
+		PAXRecords: map[string]string{"comment": "github archive metadata"},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := tw.WriteHeader(&tar.Header{Name: "owner-repo-deadbeef/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
 		t.Fatal(err)
 	}

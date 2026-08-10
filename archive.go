@@ -199,6 +199,12 @@ func extractGitHubArchive(archive, dst string) (int64, int, error) {
 		if err != nil {
 			return total, files, fmt.Errorf("bad tar archive: %w", err)
 		}
+		// GitHub currently emits a POSIX global PAX header before the synthetic
+		// repository directory. It describes following entries and is not the
+		// archive root.
+		if h.Typeflag == tar.TypeXGlobalHeader || h.Typeflag == tar.TypeXHeader {
+			continue
+		}
 		name := strings.ReplaceAll(h.Name, "\\", "/")
 		parts := strings.SplitN(strings.TrimPrefix(name, "./"), "/", 2)
 		if root == "" && len(parts) > 0 {
@@ -246,8 +252,6 @@ func extractGitHubArchive(archive, dst string) (int64, int, error) {
 				return total, files, closeErr
 			}
 			total += n
-		case tar.TypeXGlobalHeader, tar.TypeXHeader:
-			continue
 		default:
 			return total, files, fmt.Errorf("archive links/special files are not allowed: %q", h.Name)
 		}
