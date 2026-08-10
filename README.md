@@ -19,6 +19,11 @@ receipt bound to the exact archive digest; deployment refuses any other bytes.
   runs it in a locked-down container, reverse-proxying the app's subdomain to
   it. This is how a real app (Node, Python, Go, …) runs while staying boxed in.
   Bundle dependencies at **build** time — the runtime has no internet.
+- **Rails preview runtime** — a detected Rails app receives a private
+  PostgreSQL sidecar, generated ephemeral application/encryption secrets, and
+  local upload storage. No secret is read from or written to its public repo.
+  The preview Stripe identifiers are deliberately non-working: real Stripe
+  test mode requires the user's own credentials and an egress-enabled host.
 
 ## Security
 
@@ -37,6 +42,9 @@ Running container apps means executing code, so:
 - **Container lockdown.** Each app: `--cap-drop ALL`, `--security-opt
   no-new-privileges`, hard `--memory` / `--cpus` / `--pids-limit`, and an
   **internal** docker network with **no internet egress** at runtime.
+- **Rails data isolation.** Each Rails preview gets its own labeled PostgreSQL
+  container and volume on that internal network. Both are removed when the app
+  sleeps, is deleted, or reaches the daily wipe.
 - **Blast-radius discipline.** holodeck only ever stops/removes docker
   resources it labels `holodeck=1` or names `holodeck-app-*` — it never touches
   anything else on the host (this box also runs other production containers).

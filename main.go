@@ -105,6 +105,8 @@ type meta struct {
 	State     string    `json:"state"` // running | sleeping (container apps; slot given away)
 	Port      int       `json:"port"`
 	Container string    `json:"container"`
+	Database  string    `json:"database,omitempty"`
+	DBVolume  string    `json:"db_volume,omitempty"`
 	Image     string    `json:"image"`
 	Created   time.Time `json:"created"`
 }
@@ -329,6 +331,12 @@ func (s *server) buildAndRun(m *meta, src string) error {
 		return fmt.Errorf("build failed:\n%s", tail(out, 1500))
 	}
 	s.stopContainer(m.Container)
+	s.stopDatabase(m.Database, m.DBVolume)
+	if isRailsApp(src) {
+		if err := s.startRailsDatabase(m, filepath.Dir(src)); err != nil {
+			return err
+		}
+	}
 	rctx, rcancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer rcancel()
 	args := []string{
@@ -342,13 +350,89 @@ func (s *server) buildAndRun(m *meta, src string) error {
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--restart", "unless-stopped",
-		m.Image,
 	}
+	if m.Database != "" {
+		args = append(args, "--env-file", filepath.Join(filepath.Dir(src), "runtime.env"))
+	}
+	args = append(args, m.Image)
 	if out, err := s.docker(rctx, args...); err != nil {
+		s.stopDatabase(m.Database, m.DBVolume)
 		return fmt.Errorf("couldn't start the app: %s", tail(out, 800))
 	}
 	s.waitReady(m)
 	return nil
+}
+
+func isRailsApp(src string) bool {
+	for _, rel := range []string{"bin/rails", "config/application.rb", "config/database.yml"} {
+		if st, err := os.Stat(filepath.Join(src, rel)); err != nil || st.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+func randomHex(bytes int) string {
+	b := make([]byte, bytes)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// startRailsDatabase gives each throw-away Rails preview its own PostgreSQL
+// container, volume, and generated runtime secrets. Nothing is supplied by or
+// committed to the application repository, and all resources are removed with
+// the demo. Stripe values are explicitly non-working preview test identifiers:
+// the no-egress runtime can show the checkout flow but cannot contact Stripe.
+func (s *server) startRailsDatabase(m *meta, root string) error {
+	m.Database = "holodeck-db-" + m.Slug
+	m.DBVolume = "holodeck-dbdata-" + m.Slug
+	password := randomHex(24)
+	env := strings.Join([]string{
+		"RAILS_ENV=production",
+		"RAILS_SERVE_STATIC_FILES=true",
+		"VELA_HOLODECK_PREVIEW=1",
+		"SECRET_KEY_BASE=" + randomHex(64),
+		"ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=" + randomHex(32),
+		"ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=" + randomHex(32),
+		"ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=" + randomHex(32),
+		"POSTGRES_DB=vela_demo",
+		"POSTGRES_USER=vela",
+		"POSTGRES_PASSWORD=" + password,
+		"DB_HOST=" + m.Database,
+		"DB_PORT=5432",
+		"STRIPE_PRIVATE_KEY=sk_test_holodeck_preview_no_egress",
+		"STRIPE_STOREFRONT_WEBHOOK_SECRET=whsec_holodeck_preview_no_egress",
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(root, "runtime.env"), []byte(env), 0o600); err != nil {
+		return fmt.Errorf("couldn't create Rails preview environment: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	if out, err := s.docker(ctx, "volume", "create", "--label", "holodeck=1", m.DBVolume); err != nil {
+		return fmt.Errorf("couldn't create Rails database volume: %s", tail(out, 500))
+	}
+	args := []string{
+		"run", "-d", "--name", m.Database,
+		"--label", "holodeck=1", "--network", s.net,
+		"--memory", "256m", "--memory-swap", "256m", "--cpus", "0.5", "--pids-limit", "128",
+		"--security-opt", "no-new-privileges", "--restart", "unless-stopped",
+		"-e", "POSTGRES_DB=vela_demo", "-e", "POSTGRES_USER=vela", "-e", "POSTGRES_PASSWORD=" + password,
+		"-v", m.DBVolume + ":/var/lib/postgresql/data",
+		"postgres:17-alpine",
+	}
+	if out, err := s.docker(ctx, args...); err != nil {
+		s.stopDatabase(m.Database, m.DBVolume)
+		return fmt.Errorf("couldn't start Rails database: %s", tail(out, 800))
+	}
+	for ctx.Err() == nil {
+		if _, err := s.docker(ctx, "exec", m.Database, "pg_isready", "-U", "vela", "-d", "vela_demo"); err == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	s.stopDatabase(m.Database, m.DBVolume)
+	return fmt.Errorf("Rails database did not become ready")
 }
 
 func (s *server) waitReady(m *meta) {
@@ -560,6 +644,7 @@ func (s *server) freeSlot() error {
 		return fmt.Errorf("the deck is full (%d/%d slots) and every app is actively in use — try again in a few minutes", s.maxApps, s.maxApps)
 	}
 	s.stopContainer(victim.Container)
+	s.stopDatabase(victim.Database, victim.DBVolume)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	_, _ = s.docker(ctx, "rmi", "-f", victim.Image)
 	cancel()
@@ -573,6 +658,7 @@ func (s *server) freeSlot() error {
 func (s *server) destroy(slug string) {
 	if m, ok := s.readMeta(slug); ok && m.Kind == "container" {
 		s.stopContainer(m.Container)
+		s.stopDatabase(m.Database, m.DBVolume)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, _ = s.docker(ctx, "rmi", "-f", m.Image)
 		cancel()
@@ -591,6 +677,19 @@ func (s *server) stopContainer(name string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, _ = s.docker(ctx, "rm", "-f", name)
+}
+
+func (s *server) stopDatabase(name, volume string) {
+	if name != "" && strings.HasPrefix(name, "holodeck-db-") {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, _ = s.docker(ctx, "rm", "-f", name)
+		cancel()
+	}
+	if volume != "" && strings.HasPrefix(volume, "holodeck-dbdata-") {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, _ = s.docker(ctx, "volume", "rm", "-f", volume)
+		cancel()
+	}
 }
 
 // nextWipe is the next daily wipe instant in the configured timezone.
