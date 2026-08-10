@@ -44,6 +44,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -82,6 +83,7 @@ type server struct {
 	maxApps   int
 	buildTO   time.Duration
 	verifyTO  time.Duration
+	mailRelay *mailRelay
 	docker    func(context.Context, ...string) (string, error)
 	proxies   sync.Map
 	activity  sync.Map // slug -> time.Time of last request (slot-eviction LRU)
@@ -112,20 +114,25 @@ type meta struct {
 }
 
 func main() {
+	relay, err := mailRelayFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	s := &server{
-		data:     envOr("HOLODECK_DATA", "/srv/holodeck"),
-		token:    os.Getenv("HOLODECK_TOKEN"),
-		buildKey: []byte(os.Getenv("HOLODECK_BUILD_SECRET")),
-		domain:   envOr("HOLODECK_DOMAIN", "demo.holode.xyz"),
-		wipeHour: atoiOr(os.Getenv("HOLODECK_WIPE_HOUR"), 3),
-		net:      envOr("HOLODECK_NET", "holodeck-net"),
-		mem:      envOr("HOLODECK_MEM", "512m"),
-		cpus:     envOr("HOLODECK_CPUS", "0.5"),
-		pids:     envOr("HOLODECK_PIDS", "256"),
-		maxApps:  atoiOr(os.Getenv("HOLODECK_MAX_APPS"), 15),
-		buildTO:  time.Duration(atoiOr(os.Getenv("HOLODECK_BUILD_TIMEOUT_S"), 300)) * time.Second,
-		verifyTO: time.Duration(atoiOr(os.Getenv("HOLODECK_VERIFY_TIMEOUT_S"), 900)) * time.Second,
-		docker:   dockerOut,
+		data:      envOr("HOLODECK_DATA", "/srv/holodeck"),
+		token:     os.Getenv("HOLODECK_TOKEN"),
+		buildKey:  []byte(os.Getenv("HOLODECK_BUILD_SECRET")),
+		domain:    envOr("HOLODECK_DOMAIN", "demo.holode.xyz"),
+		wipeHour:  atoiOr(os.Getenv("HOLODECK_WIPE_HOUR"), 3),
+		net:       envOr("HOLODECK_NET", "holodeck-net"),
+		mem:       envOr("HOLODECK_MEM", "512m"),
+		cpus:      envOr("HOLODECK_CPUS", "0.5"),
+		pids:      envOr("HOLODECK_PIDS", "256"),
+		maxApps:   atoiOr(os.Getenv("HOLODECK_MAX_APPS"), 15),
+		buildTO:   time.Duration(atoiOr(os.Getenv("HOLODECK_BUILD_TIMEOUT_S"), 300)) * time.Second,
+		verifyTO:  time.Duration(atoiOr(os.Getenv("HOLODECK_VERIFY_TIMEOUT_S"), 900)) * time.Second,
+		mailRelay: relay,
+		docker:    dockerOut,
 	}
 	if s.token == "" || len(s.buildKey) == 0 {
 		log.Fatal("HOLODECK_TOKEN and HOLODECK_BUILD_SECRET are required")
@@ -135,6 +142,18 @@ func main() {
 		log.Fatalf("bad HOLODECK_TZ: %v", err)
 	}
 	s.loc = loc
+	if relay != nil {
+		listener, err := net.Listen("tcp", relay.listenAddr)
+		if err != nil {
+			log.Fatalf("preview SMTP relay: %v", err)
+		}
+		go func() {
+			log.Printf("preview SMTP relay listening on %s (daily cap %d)", relay.listenAddr, relay.maxDaily)
+			if err := relay.serve(listener); err != nil {
+				log.Fatalf("preview SMTP relay: %v", err)
+			}
+		}()
+	}
 	if err := os.MkdirAll(filepath.Join(s.data, "apps"), 0o755); err != nil {
 		log.Fatal(err)
 	}
@@ -403,6 +422,14 @@ func (s *server) startRailsDatabase(m *meta, root string) error {
 		"STRIPE_PRIVATE_KEY=sk_test_holodeck_preview_no_egress",
 		"STRIPE_STOREFRONT_WEBHOOK_SECRET=whsec_holodeck_preview_no_egress",
 	}, "\n") + "\n"
+	if s.mailRelay != nil {
+		env += strings.Join([]string{
+			"SMTP_ADDRESS=holodeck",
+			"SMTP_PORT=2525",
+			"SMTP_ENABLE_STARTTLS_AUTO=false",
+			"MAILER_FROM=" + s.mailRelay.from,
+		}, "\n") + "\n"
+	}
 	if err := os.WriteFile(filepath.Join(root, "runtime.env"), []byte(env), 0o600); err != nil {
 		return fmt.Errorf("couldn't create Rails preview environment: %w", err)
 	}

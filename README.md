@@ -21,7 +21,9 @@ receipt bound to the exact archive digest; deployment refuses any other bytes.
   Bundle dependencies at **build** time — the runtime has no internet.
 - **Rails preview runtime** — a detected Rails app receives a private
   PostgreSQL sidecar, generated ephemeral application/encryption secrets, and
-  local upload storage. No secret is read from or written to its public repo.
+  local upload storage. If the host configures the private SMTP relay, previews
+  can send confirmation and password-reset mail without receiving the upstream
+  provider credentials. No secret is read from or written to its public repo.
   The preview Stripe identifiers are deliberately non-working: real Stripe
   test mode requires the user's own credentials and an egress-enabled host.
 
@@ -42,6 +44,11 @@ Running container apps means executing code, so:
 - **Container lockdown.** Each app: `--cap-drop ALL`, `--security-opt
   no-new-privileges`, hard `--memory` / `--cpus` / `--pids-limit`, and an
   **internal** docker network with **no internet egress** at runtime.
+- **Mail credential isolation.** Rails previews can reach only Holodeck's
+  rate-limited SMTP listener. Holodeck rewrites the sender and relays through
+  the configured provider; app containers never receive the provider username
+  or password. The relay accepts one recipient per message, messages up to 2MB,
+  and at most 100 deliveries per UTC day by default.
 - **Rails data isolation.** Each Rails preview gets its own labeled PostgreSQL
   container and volume on that internal network. Both are removed when the app
   sleeps, is deleted, or reaches the daily wipe.
@@ -113,6 +120,11 @@ Repository headers:
 | `HOLODECK_BUILD_TIMEOUT_S` | `300` | image build timeout |
 | `HOLODECK_VERIFY_TIMEOUT_S` | `900` | test + final image verification timeout |
 | `HOLODECK_ADDR` | `:8700` | listen address |
+| `HOLODECK_SMTP_ADDRESS` / `HOLODECK_SMTP_PORT` | — / `587` | upstream SMTP provider; setting one relay variable requires all credentials below |
+| `HOLODECK_SMTP_USERNAME` / `HOLODECK_SMTP_PASSWORD` | — | upstream credentials, held only by Holodeck |
+| `HOLODECK_SMTP_FROM` | — | verified sender rewritten onto every preview message |
+| `HOLODECK_SMTP_LISTEN` | `:2525` | private-network SMTP listener |
+| `HOLODECK_SMTP_MAX_DAILY` | `100` | whole-deck daily delivery cap |
 
 ## Deploy
 

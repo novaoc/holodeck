@@ -34,7 +34,8 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 	root := t.TempDir()
 	var calls [][]string
 	s := &server{
-		net: "internal-test",
+		net:       "internal-test",
+		mailRelay: &mailRelay{from: "Vela Demos <noreply@plumb.capital>"},
 		docker: func(_ context.Context, args ...string) (string, error) {
 			calls = append(calls, append([]string(nil), args...))
 			return "ok", nil
@@ -55,7 +56,11 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 		t.Fatalf("runtime env permissions = %o", info.Mode().Perm())
 	}
 	env, _ := os.ReadFile(filepath.Join(root, "runtime.env"))
-	for _, key := range []string{"SECRET_KEY_BASE=", "DB_HOST=holodeck-db-store-abcd", "VELA_HOLODECK_PREVIEW=1", "STRIPE_PRIVATE_KEY=sk_test_"} {
+	for _, key := range []string{
+		"SECRET_KEY_BASE=", "DB_HOST=holodeck-db-store-abcd", "VELA_HOLODECK_PREVIEW=1",
+		"STRIPE_PRIVATE_KEY=sk_test_", "SMTP_ADDRESS=holodeck", "SMTP_PORT=2525",
+		"SMTP_ENABLE_STARTTLS_AUTO=false", "MAILER_FROM=Vela Demos <noreply@plumb.capital>",
+	} {
 		if !strings.Contains(string(env), key) {
 			t.Fatalf("runtime env missing %s", key)
 		}
