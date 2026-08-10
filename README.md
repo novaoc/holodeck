@@ -1,10 +1,10 @@
-# holodeck
+# Holodex
 
 Vela's demo sandbox — a single Go binary that hosts throwaway apps and wipes
-the whole deck once a day. Vela ([nanoclaw](https://github.com/novaoc/nanoclaw))
+the whole deck once a day. [Vela](https://github.com/novaoc/vela)
 POSTs an app's files to `/api/deploy` and gets back a live URL on its own
 subdomain (`<slug>.demo.holode.xyz`). The GitHub repo of whatever was built is
-the permanent copy — the holodeck program always ends.
+the permanent copy — the Holodex program always ends.
 
 For repository-sized applications, Vela streams an immutable GitHub commit
 archive directly to Holodeck. The GitHub token stays on Vela's board. Holodeck
@@ -15,7 +15,7 @@ receipt bound to the exact archive digest; deployment refuses any other bytes.
 ## Two kinds of app
 
 - **Static** — a bundle with an `index.html`, served straight from disk.
-- **Container** — a bundle with a `Dockerfile`. holodeck builds the image and
+- **Container** — a bundle with a `Dockerfile`. Holodex builds the image and
   runs it in a locked-down container, reverse-proxying the app's subdomain to
   it. This is how a real app (Node, Python, Go, …) runs while staying boxed in.
   Bundle dependencies at **build** time — the runtime has no internet.
@@ -52,7 +52,7 @@ Running container apps means executing code, so:
 - **Rails data isolation.** Each Rails preview gets its own labeled PostgreSQL
   container and volume on that internal network. Both are removed when the app
   sleeps, is deleted, or reaches the daily wipe.
-- **Blast-radius discipline.** holodeck only ever stops/removes docker
+- **Blast-radius discipline.** Holodex only ever stops/removes Docker
   resources it labels `holodeck=1` or names `holodeck-app-*` — it never touches
   anything else on the host (this box also runs other production containers).
 - **Static isolation.** Per-app subdomains = per-app browser origins; directory
@@ -74,6 +74,9 @@ build steps run arbitrary code. This is a hobby demo deck on a private Discord.
   anything older than 25h in case the box was down at the wipe hour.
 
 ## API
+
+The current compatibility API still accepts the `X-Holodeck-*` header family
+so deployed Vela clients continue working during the name migration.
 
 Mutating endpoints require `Authorization: Bearer $HOLODECK_TOKEN`.
 All deploy and verification bodies additionally require `X-Holodeck-Sign`.
@@ -106,6 +109,9 @@ Repository headers:
 
 ## Configuration (env)
 
+The current compatibility release retains the `HOLODECK_*` variable names so
+an upgrade cannot silently drop deployment, signing, or mail-relay secrets.
+
 | Var | Default | |
 |---|---|---|
 | `HOLODECK_TOKEN` | — (required) | deploy bearer token |
@@ -128,7 +134,7 @@ Repository headers:
 
 ## Deploy
 
-holodeck orchestrates the host's Docker, so it runs with the docker socket
+Holodex orchestrates the host's Docker, so it runs with the Docker socket
 mounted and the docker CLI available:
 
 ```bash
@@ -164,7 +170,7 @@ demo.example.com, *.demo.example.com {
 
 DNS: `demo` and `*.demo` A records → the server.
 
-On the nanoclaw side set `NANOCLAW_SANDBOX_URL`, `NANOCLAW_SANDBOX_TOKEN`, and
+On the Vela side set `NANOCLAW_SANDBOX_URL`, `NANOCLAW_SANDBOX_TOKEN`, and
 `NANOCLAW_SANDBOX_SECRET` (= `HOLODECK_BUILD_SECRET`) and Vela gets `deploy_demo`.
 
 MIT.
