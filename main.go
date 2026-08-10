@@ -81,9 +81,12 @@ type server struct {
 	pids      string
 	maxApps   int
 	buildTO   time.Duration
+	verifyTO  time.Duration
+	docker    func(context.Context, ...string) (string, error)
 	proxies   sync.Map
 	activity  sync.Map // slug -> time.Time of last request (slot-eviction LRU)
 	deployMu  sync.Mutex
+	buildMu   sync.Mutex // builds are heavyweight; serialize them on the shared host
 }
 
 type deployReq struct {
@@ -119,6 +122,8 @@ func main() {
 		pids:     envOr("HOLODECK_PIDS", "256"),
 		maxApps:  atoiOr(os.Getenv("HOLODECK_MAX_APPS"), 15),
 		buildTO:  time.Duration(atoiOr(os.Getenv("HOLODECK_BUILD_TIMEOUT_S"), 300)) * time.Second,
+		verifyTO: time.Duration(atoiOr(os.Getenv("HOLODECK_VERIFY_TIMEOUT_S"), 900)) * time.Second,
+		docker:   dockerOut,
 	}
 	if s.token == "" || len(s.buildKey) == 0 {
 		log.Fatal("HOLODECK_TOKEN and HOLODECK_BUILD_SECRET are required")
@@ -136,6 +141,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/deploy", s.auth(s.handleDeploy))
+	mux.HandleFunc("POST /api/deploy/archive", s.auth(s.handleArchiveDeploy))
+	mux.HandleFunc("POST /api/verify", s.auth(s.handleVerify))
 	mux.HandleFunc("GET /api/apps", s.auth(s.handleList))
 	mux.HandleFunc("DELETE /api/apps/{slug}", s.auth(s.handleDelete))
 	mux.HandleFunc("GET /api/tls-check", s.handleTLSCheck)
@@ -312,7 +319,10 @@ func (s *server) buildAndRun(m *meta, src string) error {
 	}
 	bctx, bcancel := context.WithTimeout(context.Background(), s.buildTO)
 	defer bcancel()
-	if out, err := dockerOut(bctx, "build", "--label", "holodeck=1", "-t", m.Image, src); err != nil {
+	s.buildMu.Lock()
+	out, buildErr := s.docker(bctx, "build", "--label", "holodeck=1", "-t", m.Image, src)
+	s.buildMu.Unlock()
+	if buildErr != nil {
 		if bctx.Err() == context.DeadlineExceeded {
 			return fmt.Errorf("build timed out after %s", s.buildTO)
 		}
@@ -334,7 +344,7 @@ func (s *server) buildAndRun(m *meta, src string) error {
 		"--restart", "unless-stopped",
 		m.Image,
 	}
-	if out, err := dockerOut(rctx, args...); err != nil {
+	if out, err := s.docker(rctx, args...); err != nil {
 		return fmt.Errorf("couldn't start the app: %s", tail(out, 800))
 	}
 	s.waitReady(m)
@@ -551,7 +561,7 @@ func (s *server) freeSlot() error {
 	}
 	s.stopContainer(victim.Container)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	_, _ = dockerOut(ctx, "rmi", "-f", victim.Image)
+	_, _ = s.docker(ctx, "rmi", "-f", victim.Image)
 	cancel()
 	s.proxies.Delete(victim.Slug)
 	victim.State = "sleeping"
@@ -564,7 +574,7 @@ func (s *server) destroy(slug string) {
 	if m, ok := s.readMeta(slug); ok && m.Kind == "container" {
 		s.stopContainer(m.Container)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, _ = dockerOut(ctx, "rmi", "-f", m.Image)
+		_, _ = s.docker(ctx, "rmi", "-f", m.Image)
 		cancel()
 	}
 	s.proxies.Delete(slug)
@@ -580,7 +590,7 @@ func (s *server) stopContainer(name string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, _ = dockerOut(ctx, "rm", "-f", name)
+	_, _ = s.docker(ctx, "rm", "-f", name)
 }
 
 // nextWipe is the next daily wipe instant in the configured timezone.

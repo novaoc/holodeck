@@ -6,6 +6,12 @@ POSTs an app's files to `/api/deploy` and gets back a live URL on its own
 subdomain (`<slug>.demo.holode.xyz`). The GitHub repo of whatever was built is
 the permanent copy — the holodeck program always ends.
 
+For repository-sized applications, Vela streams an immutable GitHub commit
+archive directly to Holodeck. The GitHub token stays on Vela's board. Holodeck
+first builds the repository's Docker `test` target and its deployable final
+image in a disposable workspace. A successful run returns a one-hour HMAC
+receipt bound to the exact archive digest; deployment refuses any other bytes.
+
 ## Two kinds of app
 
 - **Static** — a bundle with an `index.html`, served straight from disk.
@@ -23,6 +29,11 @@ Running container apps means executing code, so:
   the body under a shared build secret. A deploy is thus cryptographically
   proven to come from Vela's own build pipeline, not a replayed request or an
   arbitrary external repo. Missing/wrong signature → refused.
+- **Verify before deploy.** Repository deploys need a fresh receipt proving the
+  exact archive passed its Docker `test` target and produced a final image.
+  Uploaded archives reject path traversal, links, special files, `.git` data,
+  oversized expansion, and excess file counts. Workspaces and verification
+  images are removed after every result.
 - **Container lockdown.** Each app: `--cap-drop ALL`, `--security-opt
   no-new-privileges`, hard `--memory` / `--cpus` / `--pids-limit`, and an
   **internal** docker network with **no internet egress** at runtime.
@@ -50,11 +61,15 @@ build steps run arbitrary code. This is a hobby demo deck on a private Discord.
 ## API
 
 Mutating endpoints require `Authorization: Bearer $HOLODECK_TOKEN`.
-`/api/deploy` additionally requires `X-Holodeck-Sign: hex(hmac_sha256(body,
-$HOLODECK_BUILD_SECRET))`.
+All deploy and verification bodies additionally require `X-Holodeck-Sign`.
+The archive signature covers canonical request metadata followed by the raw
+compressed body, preventing a signed archive from being replayed with a changed
+name, Dockerfile, target, or port.
 
 ```
 POST   /api/deploy    {name, port?, files:[{path, content}]}   → {url, slug, kind, expires}
+POST   /api/verify    signed GitHub .tar.gz                     → {receipt, logs, duration_ms, …}
+POST   /api/deploy/archive signed .tar.gz + X-Holodeck-Verify  → {url, slug, kind, expires, …}
 GET    /api/apps                                                → [{slug, name, kind, state, …}]
 DELETE /api/apps/{slug}
 GET    /api/tls-check?domain=x   (no auth — Caddy's on_demand_tls "ask")
@@ -62,6 +77,17 @@ GET    /api/tls-check?domain=x   (no auth — Caddy's on_demand_tls "ask")
 
 A container app needs a `Dockerfile` (port from `EXPOSE`, or pass `port`); a
 static app needs an `index.html` at the root.
+
+Repository headers:
+
+| Header | Verify | Deploy | Meaning |
+|---|---:|---:|---|
+| `X-Holodeck-Name` | required | required | display name, included in HMAC |
+| `X-Holodeck-Target` | `test` | empty | verification Docker target |
+| `X-Holodeck-Dockerfile` | `Dockerfile` | `Dockerfile` | safe relative Dockerfile path |
+| `X-Holodeck-Port` | optional | optional | runtime port override |
+| `X-Holodeck-Sign` | required | required | metadata-and-body HMAC |
+| `X-Holodeck-Verify` | — | required | fresh exact-archive receipt |
 
 ## Configuration (env)
 
@@ -77,6 +103,7 @@ static app needs an `index.html` at the root.
 | `HOLODECK_MAX_APPS` | `15` | concurrent container-app slots |
 | `HOLODECK_MEM` / `HOLODECK_CPUS` / `HOLODECK_PIDS` | `512m` / `0.5` / `256` | per-app caps |
 | `HOLODECK_BUILD_TIMEOUT_S` | `300` | image build timeout |
+| `HOLODECK_VERIFY_TIMEOUT_S` | `900` | test + final image verification timeout |
 | `HOLODECK_ADDR` | `:8700` | listen address |
 
 ## Deploy
