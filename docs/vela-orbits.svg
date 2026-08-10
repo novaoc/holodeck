@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- Vela's orbit mark, reused from github.com/novaoc/nanoclaw -->
+  <!-- Vela's orbit mark, reused from github.com/novaoc/vela -->
   <rect width="512" height="512" fill="#0A0D13"/>
   <g transform="translate(256,252) scale(1.7)" stroke="#EDF1F6" stroke-width="10" stroke-linecap="round" fill="none">
     <circle r="14" fill="#EDF1F6" stroke="none"/>
