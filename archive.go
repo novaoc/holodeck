@@ -286,7 +286,8 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	if st, err := os.Stat(filepath.Join(work, filepath.FromSlash(p.Dockerfile))); err != nil || st.IsDir() {
+	dockerfilePath := filepath.Join(work, filepath.FromSlash(p.Dockerfile))
+	if st, err := os.Stat(dockerfilePath); err != nil || st.IsDir() {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Dockerfile not found at " + p.Dockerfile})
 		return
 	}
@@ -299,7 +300,7 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.docker(ctx, "rmi", "-f", finalImage)
 		cancel()
 	}()
-	args := []string{"build", "--progress=plain", "--label", "holodeck=1", "--label", "holodeck-job=1", "-f", p.Dockerfile, "-t", image}
+	args := []string{"build", "--progress=plain", "--label", "holodeck=1", "--label", "holodeck-job=1", "-f", dockerfilePath, "-t", image}
 	if p.Target != "" {
 		args = append(args, "--target", p.Target)
 	}
@@ -315,7 +316,7 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		// layer from the test build.
 		finalArgs := []string{
 			"build", "--progress=plain", "--label", "holodeck=1", "--label", "holodeck-job=1",
-			"-f", p.Dockerfile, "-t", finalImage, work,
+			"-f", dockerfilePath, "-t", finalImage, work,
 		}
 		finalLogs, finalErr := s.docker(ctx, finalArgs...)
 		logs = logs + "\n\n== deployable image ==\n" + finalLogs

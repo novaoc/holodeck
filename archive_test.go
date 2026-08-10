@@ -166,6 +166,9 @@ func TestVerifyArchiveBuildIsSignedEphemeralAndTargeted(t *testing.T) {
 	if !strings.Contains(joined, "--target test") || !strings.Contains(joined, "holodeck-job=1") {
 		t.Fatalf("verification build lost safety metadata: %s", joined)
 	}
+	if !strings.Contains(joined, filepath.Join(s.data, "jobs")) {
+		t.Fatalf("verification build did not use the validated Dockerfile path: %s", joined)
+	}
 	if strings.Contains(strings.Join(calls[1], " "), "--target") || calls[1][0] != "build" {
 		t.Fatalf("deployable final image was not built: %v", calls[1])
 	}
