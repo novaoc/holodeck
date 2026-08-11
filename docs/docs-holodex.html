@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Holodex · architecture and code</title>
+  <meta name="description" content="How Holodex works: a single Go binary that verifies signed source, builds it in Docker, and hosts it with no runtime internet — plus slots, daily wipe, and a private mail relay.">
+  <link rel="stylesheet" href="docs.css">
+  <link rel="icon" href="vela-orbits.svg" type="image/svg+xml">
+</head>
+<body>
+  <div class="docs-shell">
+    <header class="docs-top">
+      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela / Holodex</a>
+      <nav class="docs-nav" aria-label="Documentation">
+        <a href="docs.html">Overview</a>
+        <a href="docs-vela.html">Vela</a>
+        <a href="docs-holodex.html" aria-current="page">Holodex</a>
+        <a href="docs-foundation.html">Foundation</a>
+      </nav>
+    </header>
+
+    <div class="docs-body">
+      <aside class="docs-aside">
+        <nav aria-label="On this page">
+          <span class="aside-title">Holodex</span>
+          <a href="#shape">Shape of the program</a>
+          <a href="#provenance">Provenance</a>
+          <a href="#verify">Verify before deploy</a>
+          <a href="#archives">Untrusted archives</a>
+          <a href="#lockdown">Container lockdown</a>
+          <a href="#rails">Rails previews</a>
+          <a href="#mail">The mail relay</a>
+          <a href="#slots">Slots and the daily wipe</a>
+          <a href="#ingress">Ingress and TLS</a>
+          <a href="#files">Where the code lives</a>
+        </nav>
+      </aside>
+
+      <main class="docs-main">
+        <p class="eyebrow">02 / The stage</p>
+        <h1>Holodex</h1>
+        <p class="lede">One Go binary on a rented server. It accepts signed source from Vela, builds it, and runs it in a container with hard resource caps and no internet — then deletes everything once a day.</p>
+
+        <a class="repo-link" href="https://github.com/novaoc/holodex">novaoc/holodex ↗</a>
+
+        <h2 id="shape">Shape of the program</h2>
+        <p>Holodex is a plain <code>net/http</code> server with no framework and no database. State is the filesystem: each application is a directory holding its source and a <code>meta.json</code>. It orchestrates the host's Docker daemon by shelling out to the CLI, which is why it runs with the Docker socket mounted — and why its blast-radius discipline is written into the code rather than assumed.</p>
+        <pre><code>POST   /api/deploy           inline files  → {url, slug, expires}
+POST   /api/verify           signed .tar.gz → {receipt, logs, …}
+POST   /api/deploy/archive   signed .tar.gz + receipt → {url, slug, …}
+GET    /api/apps
+DELETE /api/apps/{slug}
+GET    /api/tls-check        (no auth — the ingress asks before minting a cert)
+GET    /                     routes &lt;slug&gt;.&lt;domain&gt; to the right app</code></pre>
+
+        <h2 id="provenance">Provenance</h2>
+        <p>A bearer token proves the caller has a credential. It does not prove the bytes came from Vela's build pipeline, so every deploy also carries an HMAC-SHA256 signature made with a shared build secret. The signature covers canonical metadata <em>and</em> the raw body, so a captured archive cannot be re-submitted under a different name, port, or Dockerfile.</p>
+        <pre><code>mac := hmac.New(sha256.New, s.buildKey)
+io.WriteString(mac, p.canonical())   // holodex-archive-v1\nverify\n…
+io.Copy(io.MultiWriter(f, mac, digest), limited)</code></pre>
+        <p>The stream is hashed while it is written to disk, so the file, the signature, and the digest are computed in one pass over the body — the bytes are never read twice, and there is no window in which the file on disk differs from what was signed.</p>
+        <div class="note">
+          <strong>Renaming a live protocol.</strong> The service was previously called holodeck. Rather than a flag day, both header families are accepted: a request signs with <code>X-Holodex-*</code> and the current canonical prefix, or with the legacy family and its own prefix. The two never mix — a legacy-prefix signature presented as the current family is refused, which is asserted by a test.
+        </div>
+
+        <h2 id="verify">Verify before deploy</h2>
+        <p>Verification builds the repository's Docker <code>test</code> target in a disposable workspace, then builds the final deployable image (normally reusing every expensive layer). Passing returns a receipt: an HMAC over a timestamp, the archive's SHA-256 digest, and the target.</p>
+        <pre><code>func makeVerifyReceipt(key []byte, digest, target string, now time.Time) string {
+    payload := fmt.Sprintf("v1:%d:%s:%s", now.Unix(), digest, target)
+    …
+}</code></pre>
+        <p>Deployment recomputes the digest of the archive it just received and refuses unless the receipt matches it, was issued for the <code>test</code> target, and is under an hour old. Source that never passed its tests cannot be deployed, and bytes cannot be swapped after passing.</p>
+
+        <h2 id="archives">Treating archives as hostile</h2>
+        <p>An uploaded tarball is untrusted input. The extractor strips the single synthetic top-level directory that GitHub adds, then refuses anything that could escape or smuggle host references: parent-directory traversal, absolute paths, symlinks and other special files, <code>.git</code> data, oversized expansion, and excessive file counts. Every destination path is re-checked against the workspace root after joining.</p>
+        <pre><code>full := filepath.Join(dst, filepath.FromSlash(rel))
+if !strings.HasPrefix(full, filepath.Clean(dst)+string(os.PathSeparator)) {
+    return total, files, fmt.Errorf("archive path escapes workspace: %q", h.Name)
+}</code></pre>
+
+        <h2 id="lockdown">Container lockdown</h2>
+        <p>Building and running a demo means executing code, on a box that also runs unrelated production containers. Each application gets:</p>
+        <ul>
+          <li><code>--cap-drop ALL</code> and <code>--security-opt no-new-privileges</code></li>
+          <li>hard <code>--memory</code>, <code>--cpus</code>, and <code>--pids-limit</code> caps</li>
+          <li>an <strong>internal</strong> Docker network with no internet egress at runtime — dependencies are fetched at build time only</li>
+          <li>a cap on how many container apps may run at once</li>
+        </ul>
+        <p>Equally important is what Holodex will touch. Removal is guarded by name prefix, so a bug cannot reach a neighbouring container:</p>
+        <pre><code>func (s *server) stopContainer(name string) {
+    if name == "" || !owned(name, "holodex-app-", "holodeck-app-") {
+        return
+    }
+    …
+}</code></pre>
+        <p>Both prefixes are accepted so previews created before the rename stay removable — a cleanup path that silently stops recognising old resources leaks them forever.</p>
+
+        <h2 id="rails">Rails previews</h2>
+        <p>When the source looks like a Rails application, the preview gets more than a container: its own PostgreSQL sidecar, its own volume, and freshly generated secrets that exist only for that demo. Nothing is read from, or written to, the application's public repository.</p>
+        <p>The preview environment deliberately contains <em>no</em> Stripe keys — not even fake-looking ones. A commerce demo runs the application's own local test-checkout simulator: no API call, no card data, no money. Real Stripe requires a self-hoster's own credentials on a host with egress.</p>
+        <pre><code>RAILS_ENV=production
+VELA_HOLODEX_PREVIEW=1
+SECRET_KEY_BASE=…            # generated per preview
+DB_HOST=holodex-db-&lt;slug&gt;
+APP_HOST=&lt;slug&gt;.demo.holode.xyz
+SMTP_ADDRESS=holodex          # only when the relay is configured</code></pre>
+        <p><code>APP_HOST</code> is injected so confirmation and password-reset links point at the live preview instead of a template placeholder.</p>
+
+        <h2 id="mail">The mail relay</h2>
+        <p>Previews have no internet egress, so they cannot reach a mail provider — and handing each disposable app the provider's credentials would be worse. Instead Holodex runs a small SMTP listener on the internal network. Applications connect to it unauthenticated; Holodex rewrites the sender headers to its own verified identity and relays upstream over STARTTLS with credentials the app never sees.</p>
+        <p>It accepts one recipient per message, caps message size, and enforces a whole-deck daily delivery quota. Rewriting both <code>From</code> and <code>Reply-To</code> is what stops a preview from sending mail that appears to come from someone else.</p>
+
+        <h2 id="slots">Slots and the daily wipe</h2>
+        <p>A fixed number of container apps run at once. When the deck is full, the least-recently-used app that has been idle past a threshold is put to <em>sleep</em> — container and image removed, files and URL kept, with a page explaining what happened. If every app saw traffic recently, the new deploy is refused instead of evicting someone mid-demo.</p>
+        <p>Everything is deleted at the daily wipe, and a periodic sweep clears anything older than 25 hours as a backstop in case the machine was down at the wipe hour. The repository is the permanent copy; the deck is not storage.</p>
+
+        <h2 id="ingress">Ingress and TLS</h2>
+        <p>Holodex sits behind Caddy and is the single ingress for <code>*.demo.holode.xyz</code>. Certificates are minted on demand, and Caddy asks Holodex before issuing one — <code>/api/tls-check</code> answers only for the base domain and for slugs that actually exist on disk, so the deck cannot be used to mint certificates for arbitrary hostnames.</p>
+
+        <h2 id="files">Where the code lives</h2>
+        <table>
+          <thead><tr><th>File</th><th>Responsibility</th></tr></thead>
+          <tbody>
+            <tr><td><code>main.go</code></td><td>Server, routing and reverse proxy, build and run, slots, wipe, Docker helpers, blast-radius guards</td></tr>
+            <tr><td><code>archive.go</code></td><td>Signed archive intake, canonical HMAC, receipts, safe tar extraction, verify and deploy handlers</td></tr>
+            <tr><td><code>mailrelay.go</code></td><td>Internal SMTP listener, sender rewriting, upstream STARTTLS delivery, daily quota</td></tr>
+          </tbody>
+        </table>
+        <p>Under two thousand lines total, with no framework. The security posture is stated plainly at the top of <code>main.go</code>, including its own residual risk: a container is a limit, not a perfect boundary, and build steps run arbitrary code. This is a hobby demo deck sized accordingly — not a multi-tenant platform.</p>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <span>Demos reset daily · repositories remain yours</span>
+      <span><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></span>
+    </footer>
+  </div>
+</body>
+</html>

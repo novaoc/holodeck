@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rails Foundation · architecture and code</title>
+  <meta name="description" content="How the Vela Rails foundation is built: Rails 8.1 on the Solid stack, a validated boot-time config snapshot, Material Design 3 tokens, and a guest-first storefront.">
+  <link rel="stylesheet" href="docs.css">
+  <link rel="icon" href="vela-orbits.svg" type="image/svg+xml">
+</head>
+<body>
+  <div class="docs-shell">
+    <header class="docs-top">
+      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela / Holodex</a>
+      <nav class="docs-nav" aria-label="Documentation">
+        <a href="docs.html">Overview</a>
+        <a href="docs-vela.html">Vela</a>
+        <a href="docs-holodex.html">Holodex</a>
+        <a href="docs-foundation.html" aria-current="page">Foundation</a>
+      </nav>
+    </header>
+
+    <div class="docs-body">
+      <aside class="docs-aside">
+        <nav aria-label="On this page">
+          <span class="aside-title">Foundation</span>
+          <a href="#stack">The stack</a>
+          <a href="#runtime">Boot-time configuration</a>
+          <a href="#identity">Identity and rename</a>
+          <a href="#auth">Accounts and OAuth</a>
+          <a href="#orgs">Organizations and billing</a>
+          <a href="#md3">Material Design 3</a>
+          <a href="#storefront">Guest-first storefront</a>
+          <a href="#preview">Preview runtime</a>
+          <a href="#gates">Production gates</a>
+        </nav>
+      </aside>
+
+      <main class="docs-main">
+        <p class="eyebrow">03 / The foundation</p>
+        <h1>Rails Foundation</h1>
+        <p class="lede">The MIT-licensed Rails 8.1 template every generated application starts from. Deliberately close to stock Rails: the framework-specific surface is one namespace, one config file, and one Stimulus prefix — everything else is Rails as it ships.</p>
+
+        <a class="repo-link" href="https://github.com/novaoc/vela-foundation">novaoc/vela-foundation ↗</a>
+
+        <h2 id="stack">The stack</h2>
+        <p>Rails 8.1 on Ruby 4.0 and PostgreSQL. Propshaft, import maps, and Hotwire — no Node build step and no JavaScript bundler. Solid Queue, Solid Cache, and Solid Cable all run on the primary database by default, so a small deployment is one app container and one database; setting separate <code>*_DATABASE_URL</code> values splits them apart when it grows. Puma behind Thruster, Tailwind CSS v4 compiled against Material Design 3 tokens.</p>
+        <p>Every dependency is a permissively licensed gem from rubygems.org: Devise for authentication, OmniAuth for OAuth, Pay for Stripe billing, Madmin for the operator console, plus Solid Queue's Mission Control. There is no proprietary runtime and nothing to license — every file is copied into the generated application.</p>
+
+        <h2 id="runtime">Boot-time configuration</h2>
+        <p>The idea that shapes the rest of the app: deployment settings are read, validated, and frozen <em>once</em> at boot, into a snapshot. Request data and later <code>ENV</code> mutation can never become URL, mail, payment, or storage configuration.</p>
+        <pre><code>config.x.runtime_config = Foundation::RuntimeConfig.new(
+  environment: ENV,
+  foundation: config.x.foundation,
+  rails_environment: Rails.env
+)</code></pre>
+        <p>Invalid settings fail the boot instead of surfacing later as a broken link in a password-reset email. The most consequential rule is host pinning: in production the public host must be the configured domain or a subdomain of it.</p>
+        <pre><code>def enforce_canonical_domain(host, foundation_domain)
+  return unless production? &amp;&amp; !preview?
+  return if canonical.blank? || host == canonical ||
+            host.end_with?(".#{canonical}")
+
+  raise Invalid, "APP_HOST must be the configured domain or one of its subdomains"
+end</code></pre>
+        <p>Without that, an injected <code>APP_HOST</code> would move Stripe return URLs and every emailed link to another domain. Hosted previews are exempt because their hostname is assigned at run time. The suffix check is dot-prefixed on purpose — a bare suffix match would accept <code>notyourdomain.com</code> as a subdomain of <code>yourdomain.com</code>.</p>
+        <p>Link scheme is chosen by host rather than by environment: HTTPS everywhere, plaintext only for loopback. Both <code>ApplicationController</code> and <code>ApplicationMailer</code> derive their URL options from the snapshot, so no individual call site can forget and fall back to the request host.</p>
+
+        <h2 id="identity">Identity and rename</h2>
+        <p>Product identity lives in one place, <code>config/foundation.yml</code>, exposed as <code>Rails.configuration.x.foundation</code>. <code>bin/rename</code> stamps a new identity across that file and the README; the web manifest and app icon are <em>derived</em> from the configuration at request time rather than stamped, so they can never drift out of sync.</p>
+        <p>The script is treated as a security boundary, because an automated generator runs it on a fresh application: no shell, no subprocess, no network. Input passes a printable-ASCII gate, length caps, and per-field allowlists; every replacement is computed and validated in memory before a single byte is written, so a rejected run leaves the tree byte-identical. Running it twice with the same arguments is a no-op.</p>
+
+        <h2 id="auth">Accounts and OAuth</h2>
+        <p>Devise with required email confirmation, lockout after repeated failures, and a twelve-character minimum. Cloudflare Turnstile guards registration and password reset when its keys are present, and disposable email domains are rejected at signup.</p>
+        <p>OAuth linking carries the security rule worth stating explicitly: an OAuth sign-in whose email matches an existing local account is <strong>never</strong> auto-merged. The person is asked to sign in with their existing credentials and link the provider deliberately from their settings. Unlinking is refused when it would leave an account with no way to sign in at all.</p>
+
+        <h2 id="orgs">Organizations and billing</h2>
+        <p>Every signup creates a personal organization unless it arrives through an invitation, in which case the invited organization is joined instead. Roles are owner, admin, and member; invitations are emailed with signed, expiring tokens; ownership transfer and member removal are guarded so an organization cannot lose its last owner.</p>
+        <p>The organization is the billable entity. Plans resolve by a fixed precedence — a manual operator assignment beats a live subscription, which beats the free default — and the UI reflects which one is in force, hiding self-serve upgrade prompts for manually assigned plans while still exposing billing management when a real subscription coexists.</p>
+        <p>The operator console is gated on a single flag that no form, seed, parameter, or public route can set; organization roles grant no access to it. Every mutating admin request writes a structured audit event carrying the actor, subject, and outcome — never parameters or credential values.</p>
+
+        <h2 id="md3">Material Design 3</h2>
+        <p>Light and dark semantic tokens are generated from one brand seed colour, alongside a typography scale, shape scale, elevation levels, and state-layer opacities. Tailwind utilities map onto those tokens, so components are styled in terms of roles rather than hex values.</p>
+        <p>Components are ERB partials plus Stimulus controllers: buttons, cards, text fields, selects, checkboxes and switches, chips, focus-trapped dialogs, menus, snackbars, a top app bar, and navigation that swaps between bottom bar, rail, and drawer across the five adaptive breakpoints — the same items, a different component class, rather than the same layout scaled.</p>
+        <p>Icons come only from a locally subset Material Symbols Rounded font. There is no icon CDN and no runtime font fetch, which means no third party sees your users. The accessibility rules are part of the contract and are tested: 48px minimum targets, visible focus, AA contrast in both schemes, reduced-motion support, and layout that survives 200% zoom.</p>
+
+        <h2 id="storefront">Guest-first storefront</h2>
+        <p>An optional module, enabled by default. The rule that drives its design is that buying must not require an account: checkout collects and validates an email, caps quantity, and issues the receipt through a signed, expiring access link so a guest can always reach their own order — while an unauthorized request for the same order gets a 404, not a redirect.</p>
+        <p>Amounts are always computed server-side from product prices; a client-supplied amount is never trusted. Fulfillment happens only through the verified Stripe webhook, which checks signature, session, client reference, amount, and currency, idempotently. Signing in leads to the storefront, never to an inherited admin dashboard.</p>
+
+        <h2 id="preview">Preview runtime</h2>
+        <p>A deploy-time flag, set by the host and never by the application, turns the app into a disposable preview: local disk storage, <code>X-Robots-Tag: noindex</code> on every response through outermost middleware (so static files and rendered errors are covered too), and a clearly labelled checkout simulator that moves no money and collects no card data.</p>
+        <p>Mail follows a strict precedence — SMTP settings when present, otherwise in-memory for previews, otherwise the configured production provider. An offline preview with no relay confirms new accounts immediately so the demo is usable; the moment a relay is present, ordinary confirmation mail resumes.</p>
+
+        <h2 id="gates">Production gates</h2>
+        <p>The Docker <code>test</code> stage is the contract Holodex builds. It provisions a throwaway PostgreSQL cluster inside the image and runs the full quality bar in one step:</p>
+        <div class="pipeline">
+          <div><b>STYLE</b><span>RuboCop, zero offenses</span></div>
+          <div><b>SECURITY</b><span>Brakeman, zero warnings</span></div>
+          <div><b>SUPPLY CHAIN</b><span>bundler-audit and import map audit</span></div>
+          <div><b>TESTS</b><span>The full suite against real PostgreSQL</span></div>
+        </div>
+        <p>The same stage verifies the single-database runtime topology actually works before the image is considered good. At the current commit that gate runs 256 tests and 2,027 assertions with zero failures, and <code>/healthcheck</code> reports database connectivity, pending migrations, queue liveness, storage writability, mail mode, and Stripe readiness — the last of these without contacting Stripe.</p>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <span>Demos reset daily · repositories remain yours</span>
+      <span><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></span>
+    </footer>
+  </div>
+</body>
+</html>

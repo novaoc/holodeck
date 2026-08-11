@@ -1,0 +1,226 @@
+:root {
+  color-scheme: dark;
+  --ink: #f4f7fb;
+  --muted: #9ca8b8;
+  --night: #080a0f;
+  --panel: #10151e;
+  --cyan: #55e6ff;
+  --violet: #a779ff;
+  --green: #68f0a5;
+  --line: #263143;
+  --pixel: 4px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--night);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.7;
+  -webkit-text-size-adjust: 100%;
+}
+
+code, pre, .mono { font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+
+a { color: var(--cyan); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
+
+/* ── shell ─────────────────────────────────────────────── */
+
+.docs-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 20px 96px;
+}
+
+.docs-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 28px;
+}
+
+.docs-top .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.docs-top .brand img { width: 26px; height: 26px; }
+
+.docs-nav { display: flex; flex-wrap: wrap; gap: 4px; }
+.docs-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 14px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  border: 1px solid transparent;
+}
+.docs-nav a:hover { color: var(--ink); border-color: var(--line); }
+.docs-nav a[aria-current="page"] { color: var(--night); background: var(--cyan); font-weight: 600; }
+
+/* ── layout with sidebar ───────────────────────────────── */
+
+.docs-body { display: grid; gap: 40px; grid-template-columns: minmax(0, 1fr); }
+
+@media (min-width: 900px) {
+  .docs-body { grid-template-columns: 220px minmax(0, 1fr); gap: 56px; }
+  .docs-aside { position: sticky; top: 24px; align-self: start; max-height: calc(100vh - 48px); overflow-y: auto; }
+}
+
+.docs-aside nav { display: flex; flex-direction: column; }
+.docs-aside .aside-title {
+  font-size: 0.72rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 18px 0 6px;
+}
+.docs-aside a {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 4px 0 4px 12px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  border-left: 2px solid transparent;
+}
+.docs-aside a:hover { color: var(--ink); border-left-color: var(--line); }
+
+/* ── content ───────────────────────────────────────────── */
+
+.docs-main { min-width: 0; }
+
+.eyebrow {
+  font-size: 0.75rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--violet);
+  margin: 0 0 10px;
+}
+
+h1 { font-size: clamp(1.9rem, 5vw, 2.7rem); line-height: 1.15; margin: 0 0 14px; letter-spacing: -0.02em; }
+h2 {
+  font-size: 1.35rem;
+  margin: 52px 0 14px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  letter-spacing: -0.01em;
+  scroll-margin-top: 20px;
+}
+h3 { font-size: 1.02rem; margin: 30px 0 8px; color: var(--cyan); scroll-margin-top: 20px; }
+
+.lede { font-size: 1.1rem; color: var(--muted); max-width: 62ch; }
+p, li { max-width: 74ch; }
+
+pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--violet);
+  padding: 14px 16px;
+  overflow-x: auto;
+  font-size: 0.84rem;
+  line-height: 1.6;
+  margin: 16px 0;
+}
+pre code { color: #cfe3f5; }
+:not(pre) > code {
+  background: #151b26;
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  font-size: 0.86em;
+  color: var(--green);
+}
+
+.note {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--cyan);
+  background: #0d131c;
+  padding: 14px 16px;
+  margin: 20px 0;
+}
+.note strong { color: var(--cyan); }
+
+table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 0.92rem; display: block; overflow-x: auto; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+
+.pipeline { display: grid; gap: 10px; margin: 22px 0; }
+@media (min-width: 720px) { .pipeline { grid-template-columns: repeat(4, 1fr); } }
+.pipeline div { border: 1px solid var(--line); background: var(--panel); padding: 12px 14px; }
+.pipeline b { display: block; font-size: 0.7rem; letter-spacing: 0.14em; color: var(--green); margin-bottom: 6px; }
+.pipeline span { font-size: 0.86rem; color: var(--muted); }
+
+.cardgrid { display: grid; gap: 16px; margin: 28px 0; }
+@media (min-width: 760px) { .cardgrid { grid-template-columns: repeat(3, 1fr); } }
+.cardgrid a {
+  display: block;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  padding: 20px;
+  text-decoration: none;
+  color: var(--ink);
+  transition: border-color 140ms linear, transform 140ms steps(2, end);
+}
+.cardgrid a:hover { border-color: var(--cyan); transform: translateY(-2px); }
+.cardgrid .idx { font-size: 0.7rem; letter-spacing: 0.16em; color: var(--violet); }
+.cardgrid h2 { border: 0; margin: 8px 0 6px; padding: 0; font-size: 1.15rem; }
+.cardgrid p { color: var(--muted); font-size: 0.9rem; margin: 0; }
+
+.repo-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  gap: 8px;
+  padding: 0 16px;
+  margin: 8px 10px 8px 0;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+.repo-link:hover { border-color: var(--cyan); }
+
+footer.docs-footer {
+  margin-top: 72px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+footer.docs-footer a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 10px;
+  color: var(--muted);
+  margin-left: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+  .cardgrid a:hover { transform: none; }
+}

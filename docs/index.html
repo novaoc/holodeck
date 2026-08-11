@@ -205,9 +205,25 @@
 
     .prompt strong { color: var(--violet); }
 
+    .topbar-right { display: inline-flex; align-items: center; gap: 6px; }
+
+    .docs-entry {
+      display: inline-flex;
+      align-items: center;
+      min-height: 48px;
+      padding: 0 14px;
+      color: var(--ink);
+      text-decoration: none;
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      border: 1px solid var(--line);
+    }
+    .docs-entry:hover { border-color: var(--cyan); color: var(--cyan); }
+
     .cards {
       display: grid;
-      grid-template-columns: repeat(2, 1fr);
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
       gap: 20px;
       margin-top: clamp(72px, 12vw, 136px);
     }
@@ -348,7 +364,10 @@
         <img src="vela-orbits.svg" alt="">
         Vela / Holodex
       </a>
-      <span class="status">demo deck online</span>
+      <span class="topbar-right">
+        <a class="docs-entry" href="docs.html">Docs</a>
+        <span class="status">demo deck online</span>
+      </span>
     </nav>
 
     <section class="hero">
@@ -363,18 +382,24 @@
       </div>
     </section>
 
-    <section class="cards" aria-label="Project repositories">
-      <a class="card" href="https://github.com/novaoc/vela">
+    <section class="cards" aria-label="How the stack is built">
+      <a class="card" href="docs-vela.html">
         <span class="card-index">01 / THE AGENT</span>
         <h2>Meet Vela</h2>
-        <p>Vela is the tiny-board Discord agent that plans with you, builds production-minded Rails apps, and publishes work anyone can fork.</p>
-        <span class="arrow" aria-hidden="true">↗</span>
+        <p>The tiny-board Discord agent that plans with you, builds production-minded Rails apps, and signs everything it ships.</p>
+        <span class="arrow" aria-hidden="true">→</span>
       </a>
-      <a class="card" href="https://github.com/novaoc/holodex">
+      <a class="card" href="docs-holodex.html">
         <span class="card-index">02 / THE STAGE</span>
         <h2>View Holodex</h2>
-        <p>A locked-down demo host for Vela's verified builds. Apps have hard resource limits, no runtime internet, and a daily wipe. GitHub is the permanent copy.</p>
-        <span class="arrow" aria-hidden="true">↗</span>
+        <p>A locked-down demo host for Vela's verified builds. Hard resource limits, no runtime internet, and a daily wipe. GitHub is the permanent copy.</p>
+        <span class="arrow" aria-hidden="true">→</span>
+      </a>
+      <a class="card" href="docs-foundation.html">
+        <span class="card-index">03 / THE FOUNDATION</span>
+        <h2>Read the Foundation</h2>
+        <p>The MIT Rails 8.1 template every generated app starts from: Material Design 3, guest-first commerce, and a validated boot-time configuration.</p>
+        <span class="arrow" aria-hidden="true">→</span>
       </a>
     </section>
 

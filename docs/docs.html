@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Docs · Vela, Holodex, and the Rails Foundation</title>
+  <meta name="description" content="How the Vela stack is built: a Discord agent on a RISC-V board, a locked-down demo host, and the Rails foundation every generated app starts from.">
+  <link rel="stylesheet" href="docs.css">
+  <link rel="icon" href="vela-orbits.svg" type="image/svg+xml">
+</head>
+<body>
+  <div class="docs-shell">
+    <header class="docs-top">
+      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela / Holodex</a>
+      <nav class="docs-nav" aria-label="Documentation">
+        <a href="docs.html" aria-current="page">Overview</a>
+        <a href="docs-vela.html">Vela</a>
+        <a href="docs-holodex.html">Holodex</a>
+        <a href="docs-foundation.html">Foundation</a>
+      </nav>
+    </header>
+
+    <main class="docs-main">
+      <p class="eyebrow">Documentation</p>
+      <h1>Three programs, one pipeline.</h1>
+      <p class="lede">A sentence in Discord becomes a tested Rails repository and a running demo. Three codebases do that work, and each is documented here: what it is, how it is built, and how the code actually behaves.</p>
+
+      <div class="cardgrid">
+        <a href="docs-vela.html">
+          <span class="idx">01 / THE AGENT</span>
+          <h2>Vela</h2>
+          <p>A Go agent on a credit-card-sized RISC-V board. Plans, writes code, and signs what it ships.</p>
+        </a>
+        <a href="docs-holodex.html">
+          <span class="idx">02 / THE STAGE</span>
+          <h2>Holodex</h2>
+          <p>A single Go binary that verifies signed source, builds it, and hosts it in a boxed-in container.</p>
+        </a>
+        <a href="docs-foundation.html">
+          <span class="idx">03 / THE FOUNDATION</span>
+          <h2>Rails Foundation</h2>
+          <p>The MIT Rails 8.1 template every generated application starts from.</p>
+        </a>
+      </div>
+
+      <h2 id="pipeline">The pipeline end to end</h2>
+      <p>Nothing here trusts the previous step's word for it. Each stage hands the next a value it can verify on its own.</p>
+
+      <div class="pipeline">
+        <div><b>01 · REQUEST</b><span>Someone describes an app. Vela writes a concrete plan and waits for approval.</span></div>
+        <div><b>02 · GENERATE</b><span>A repository is created from the Rails foundation, private, then given its own identity.</span></div>
+        <div><b>03 · VERIFY</b><span>Holodex builds the Docker <code>test</code> stage. Passing returns a receipt bound to that exact archive.</span></div>
+        <div><b>04 · DEPLOY</b><span>Only bytes matching the receipt are deployed, into a container with no internet egress.</span></div>
+      </div>
+
+      <h3>What each boundary actually checks</h3>
+      <table>
+        <thead><tr><th>Boundary</th><th>Mechanism</th><th>What it prevents</th></tr></thead>
+        <tbody>
+          <tr><td>Vela → Holodex</td><td>HMAC-SHA256 over canonical metadata plus the raw archive, in <code>X-Holodex-Sign</code></td><td>Anyone but Vela's own pipeline deploying, or a signed archive being replayed with a different name, port, or Dockerfile</td></tr>
+          <tr><td>Verify → deploy</td><td>One-hour receipt bound to the archive's SHA-256 digest and the <code>test</code> target</td><td>Deploying source that never passed its tests, or swapping bytes after they passed</td></tr>
+          <tr><td>App → internet</td><td>Internal Docker network, no egress at runtime</td><td>A running demo reaching the network; dependencies are fetched at build time only</td></tr>
+          <tr><td>App → host</td><td><code>cap-drop ALL</code>, <code>no-new-privileges</code>, memory/CPU/PID caps</td><td>A build or app escaping its box on a machine that also runs production workloads</td></tr>
+        </tbody>
+      </table>
+
+      <h2 id="why">Why it is shaped this way</h2>
+      <p>The constraint that set the architecture is the hardware. Vela runs on a LicheeRV Nano: a single RISC-V core and 256 MB of RAM, powered from a USB port. That board cannot bundle a Rails app, run a PostgreSQL test suite, or build a Docker image. So the work is split by what each machine is good at.</p>
+      <p>The board holds the conversation, the judgement, and the credentials. It never sends its GitHub token anywhere. Holodex runs on a rented server with real CPU and disk, and it is deliberately incurious: it verifies a signature, builds a container, and serves it. The foundation is where the actual product engineering lives, so a generated app is production-shaped from its first commit rather than something to harden later.</p>
+
+      <div class="note">
+        <strong>A demo is not a deployment.</strong> Every app on Holodex is deleted at the daily wipe, and the GitHub repository is the permanent copy. Preview URLs are unlisted, not access-controlled: responses carry <code>X-Robots-Tag: noindex</code>, which keeps them out of search results and nothing more.
+      </div>
+
+      <h2 id="repos">Repositories</h2>
+      <p>All three are public and MIT licensed.</p>
+      <a class="repo-link" href="https://github.com/novaoc/vela">novaoc/vela ↗</a>
+      <a class="repo-link" href="https://github.com/novaoc/holodex">novaoc/holodex ↗</a>
+      <a class="repo-link" href="https://github.com/novaoc/vela-foundation">novaoc/vela-foundation ↗</a>
+    </main>
+
+    <footer class="docs-footer">
+      <span>Demos reset daily · repositories remain yours</span>
+      <span><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></span>
+    </footer>
+  </div>
+</body>
+</html>

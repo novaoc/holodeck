@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vela · architecture and code</title>
+  <meta name="description" content="How Vela works: a Go Discord agent on a 256 MB RISC-V board — tool loop, injection phase guard, signed deploys, and graceful hot-swap.">
+  <link rel="stylesheet" href="docs.css">
+  <link rel="icon" href="vela-orbits.svg" type="image/svg+xml">
+</head>
+<body>
+  <div class="docs-shell">
+    <header class="docs-top">
+      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela / Holodex</a>
+      <nav class="docs-nav" aria-label="Documentation">
+        <a href="docs.html">Overview</a>
+        <a href="docs-vela.html" aria-current="page">Vela</a>
+        <a href="docs-holodex.html">Holodex</a>
+        <a href="docs-foundation.html">Foundation</a>
+      </nav>
+    </header>
+
+    <div class="docs-body">
+      <aside class="docs-aside">
+        <nav aria-label="On this page">
+          <span class="aside-title">Vela</span>
+          <a href="#hardware">The hardware constraint</a>
+          <a href="#loop">The agent loop</a>
+          <a href="#phases">Injection phase guard</a>
+          <a href="#tools">The tool belt</a>
+          <a href="#build">How a build happens</a>
+          <a href="#config">Configuration</a>
+          <a href="#deploy">Deploying to the board</a>
+          <a href="#files">Where the code lives</a>
+        </nav>
+      </aside>
+
+      <main class="docs-main">
+        <p class="eyebrow">01 / The agent</p>
+        <h1>Vela</h1>
+        <p class="lede">A Discord agent written in Go, running as a single static binary on a LicheeRV Nano — one RISC-V core, 256 MB of RAM, powered from a USB port. It holds the conversation, decides what to build, and signs everything it ships.</p>
+
+        <a class="repo-link" href="https://github.com/novaoc/vela">novaoc/vela ↗</a>
+
+        <h2 id="hardware">The hardware constraint</h2>
+        <p>Most of Vela's design follows from the board. 256 MB of RAM and a single core mean it cannot bundle a Rails app, run a PostgreSQL suite, or build a Docker image — and the stock image ships without <code>git</code>. So Vela does none of those things. It talks to GitHub over the REST API, and it hands heavy builds to Holodex.</p>
+        <p>What stays on the board is the part that must stay private: the Discord token, the model key, and the GitHub token. Source bytes and a signature cross the boundary to Holodex; credentials never do.</p>
+        <div class="note">
+          <strong>Measured, not assumed.</strong> A 107-request evaluation on the board peaked at 34 MB resident. RAM was never the bottleneck for a single process — concurrency is capped at one turn at a time precisely so it stays that way.
+        </div>
+
+        <h2 id="loop">The agent loop</h2>
+        <p>A Discord message becomes a turn. The turn runs a tool-calling loop against an OpenAI-compatible endpoint: the model answers, or it calls a tool, the result is appended, and the loop runs again until the model produces a final answer or the tool budget is exhausted.</p>
+        <pre><code>Discord gateway (discordgo)
+      │
+      ▼
+  Agent.Handle ──► Agent.run ──► Agent.toolLoop
+                                    │
+                     ┌──────────────┼──────────────┐
+                     ▼              ▼              ▼
+                 web tools     code tools     media tools
+                (search,       (shell,        (images,
+                 fetch)         github)        charts)</code></pre>
+        <p>Normal turns answer once. The deliberately slow path is <code>/dive</code>, which raises the tool budget and runs self-review passes — draft, critique, repair — on the theory that a cheap model with more passes beats an expensive model with one shot. Critique passes get a reduced tool belt: pure lookups only, never paid or side-effecting tools, so a review round cannot spend money or post to Discord.</p>
+
+        <h2 id="phases">The injection phase guard</h2>
+        <p>The sharpest safety property in the codebase. A turn that has read the open web must not then run code, and a turn that has run code must not then fetch a URL. Otherwise a web page could carry instructions into a shell, or a shell could exfiltrate secrets through an image fetch.</p>
+        <p><code>ToolCtx</code> tracks two flags, <code>usedWeb</code> and <code>usedCode</code>. Crossing between lanes does not refuse the request — that would strand the user at a dead end. Instead the tool is left unexecuted and a <em>phase boundary</em> is raised:</p>
+        <pre><code>type phaseBoundary struct {
+    Lane string // web | code
+    Tool string
+}</code></pre>
+        <p>The agent checkpoints the job, starts a fresh phase in the other lane, and continues on its own. Two details matter. A refused call (a non-coder attempting a shell) sets no flag at all, so a refusal cannot poison the rest of the turn. And <code>attach_image</code> counts as web, because it is an arbitrary outbound GET and would otherwise be an exfiltration channel out of a code phase.</p>
+
+        <h2 id="tools">The tool belt</h2>
+        <p>Tools are gated by capability rather than offered wholesale. The GitHub tool runs no code on the box, so it is open to the server by default; the shell is root-level trust and is limited to an explicit allowlist, which when empty disables the capability entirely.</p>
+        <table>
+          <thead><tr><th>Tool</th><th>Gate</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><code>github</code></td><td>allowlist, empty = everyone</td><td>API only: create, read, write files, open PRs</td></tr>
+            <tr><td><code>create_rails_app</code></td><td>requires a configured foundation</td><td>Generates from the template, always private</td></tr>
+            <tr><td><code>publish_app</code></td><td>operator flag</td><td>Makes a finished app public; refuses when publication is off</td></tr>
+            <tr><td><code>verify_repo</code> / <code>deploy_repo</code></td><td>coder allowlist</td><td>Streams a commit archive to Holodex</td></tr>
+            <tr><td><code>shell</code>, <code>write_file</code></td><td>coder allowlist</td><td>Root-level trust; empty allowlist disables it</td></tr>
+            <tr><td>web, media, data tools</td><td>open</td><td>Search, fetch, image and video generation, price and benchmark charts</td></tr>
+          </tbody>
+        </table>
+        <p>Deploy secrets are handled out of band. Values are stored on the box, injected into a shell environment <em>by name</em>, and never enter the model's context, history, memory, or logs — with a TTL as a backstop against a forgotten key.</p>
+
+        <h2 id="build">How a build happens</h2>
+        <p>When someone asks for an application, Vela does not start writing files. It posts a plan and waits: a reply of "go ahead" in that thread is treated as approval for the most recent plan, so the conversation is not restarted.</p>
+        <div class="pipeline">
+          <div><b>01 · GENERATE</b><span><code>create_rails_app</code> creates a private repository from the foundation template.</span></div>
+          <div><b>02 · IDENTITY</b><span>Focused file writes replace the template identity with the requested product's.</span></div>
+          <div><b>03 · VERIFY</b><span>The exact commit is streamed to Holodex, which builds its Docker <code>test</code> target.</span></div>
+          <div><b>04 · DEPLOY</b><span>The returned receipt authorizes deploying that archive and nothing else.</span></div>
+        </div>
+        <p>The archive is signed before it leaves the board. The HMAC covers canonical request metadata followed by the raw compressed bytes, so a valid signature cannot be replayed against a different application name, port, or Dockerfile:</p>
+        <pre><code>holodex-archive-v1
+verify
+Card Shop
+test
+Dockerfile
+3000
+</code></pre>
+        <p>Generated applications are created private and stay private. Making one public is a separate action that refuses unless the operator has explicitly enabled publication — the model cannot end a containment period on its own.</p>
+
+        <h2 id="config">Configuration</h2>
+        <p>Settings are read from the environment first, then from <code>vela.env</code> or the legacy <code>nanoclaw.env</code>. Keys prefer the <code>VELA_*</code> spelling and fall back to the older <code>NANOCLAW_*</code> names, so a deployed board keeps running across the rename without its credentials being touched:</p>
+        <pre><code>get := func(k, def string) string {
+    if rest, ok := strings.CutPrefix(k, "NANOCLAW_"); ok {
+        if v := lookup("VELA_" + rest); v != "" {
+            return v
+        }
+    }
+    if v := lookup(k); v != "" {
+        return v
+    }
+    return def
+}</code></pre>
+
+        <h2 id="deploy">Deploying to the board</h2>
+        <p>Cross-compile, copy alongside the running binary, swap atomically, then signal. The binary drains on <code>SIGTERM</code> — it finishes in-flight turns for up to two minutes before exiting — and the supervisor relaunches it about five seconds later. Deployment is confirmed by comparing SHA-256 hashes on both sides, never by assuming the copy worked.</p>
+        <pre><code>make riscv64
+scp vela-riscv64 root@board:/root/vela.new
+mv /root/vela.new /root/vela &amp;&amp; chmod +x /root/vela
+killall vela        # drains, supervisor respawns
+sha256sum /root/vela</code></pre>
+
+        <h2 id="files">Where the code lives</h2>
+        <table>
+          <thead><tr><th>File</th><th>Responsibility</th></tr></thead>
+          <tbody>
+            <tr><td><code>agent.go</code></td><td>System prompt, turn handling, tool loop, self-review passes, phase transitions</td></tr>
+            <tr><td><code>tools.go</code></td><td>Tool definitions and the capability gates; <code>ToolCtx</code> and the phase guard</td></tr>
+            <tr><td><code>github.go</code></td><td>API-only GitHub client: repositories, file writes, PRs, template generation</td></tr>
+            <tr><td><code>repoarchive.go</code></td><td>Commit archive download, canonical HMAC signing, verify and deploy calls</td></tr>
+            <tr><td><code>sandbox.go</code></td><td>The lightweight artifact deploy path and its provenance signature</td></tr>
+            <tr><td><code>config.go</code></td><td>Environment and file configuration with legacy-key fallback</td></tr>
+            <tr><td><code>discord.go</code>, <code>discordact.go</code></td><td>Gateway wiring and the Discord actuator interface</td></tr>
+            <tr><td><code>memory.go</code>, <code>person.go</code></td><td>Long-term memory and per-person impressions</td></tr>
+          </tbody>
+        </table>
+      </main>
+    </div>
+
+    <footer class="docs-footer">
+      <span>Demos reset daily · repositories remain yours</span>
+      <span><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></span>
+    </footer>
+  </div>
+</body>
+</html>
