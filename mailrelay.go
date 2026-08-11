@@ -192,6 +192,7 @@ func (s *mailRelaySession) Data(reader io.Reader) error {
 		return errors.New("daily preview mail quota reached")
 	}
 	message = replaceMailHeader(message, "From", s.relay.from)
+	message = replaceMailHeader(message, "Reply-To", s.relay.from)
 	if err := s.relay.send(s.relay.fromAddr, s.recipients, message); err != nil {
 		return fmt.Errorf("upstream delivery failed: %w", err)
 	}

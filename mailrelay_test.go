@@ -9,12 +9,12 @@ import (
 	smtpserver "github.com/emersion/go-smtp"
 )
 
-func TestMailRelayRewritesSenderAndForwardsOneRecipient(t *testing.T) {
+func TestMailRelayRewritesSenderHeadersAndForwardsOneRecipient(t *testing.T) {
 	var gotFrom string
 	var gotRecipients []string
 	var gotMessage []byte
 	relay := &mailRelay{
-		from: "Vela Demos <noreply@plumb.capital>", fromAddr: "noreply@plumb.capital", maxDaily: 10,
+		from: "Holodex <noreply@plumb.capital>", fromAddr: "noreply@plumb.capital", maxDaily: 10,
 	}
 	relay.send = func(from string, recipients []string, message []byte) error {
 		gotFrom = from
@@ -29,15 +29,18 @@ func TestMailRelayRewritesSenderAndForwardsOneRecipient(t *testing.T) {
 	if err := session.Rcpt("customer@example.com", &smtpserver.RcptOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	message := "From: Spoof <spoof@example.com>\r\nTo: customer@example.com\r\nSubject: Confirm\r\n\r\nHello"
+	message := "From: Spoof <spoof@example.com>\r\nReply-To: Vehicle Underwriter <noreply@example.com>\r\nTo: customer@example.com\r\nSubject: Confirm\r\n\r\nHello"
 	if err := session.Data(strings.NewReader(message)); err != nil {
 		t.Fatal(err)
 	}
 	if gotFrom != "noreply@plumb.capital" || len(gotRecipients) != 1 || gotRecipients[0] != "customer@example.com" {
 		t.Fatalf("unexpected envelope: from=%q recipients=%q", gotFrom, gotRecipients)
 	}
-	if bytes.Contains(gotMessage, []byte("spoof@example.com")) || !bytes.Contains(gotMessage, []byte("From: Vela Demos <noreply@plumb.capital>")) {
-		t.Fatalf("sender was not rewritten: %s", gotMessage)
+	if bytes.Contains(gotMessage, []byte("spoof@example.com")) || bytes.Contains(gotMessage, []byte("Vehicle Underwriter")) {
+		t.Fatalf("original sender headers were not removed: %s", gotMessage)
+	}
+	if !bytes.Contains(gotMessage, []byte("From: Holodex <noreply@plumb.capital>")) || !bytes.Contains(gotMessage, []byte("Reply-To: Holodex <noreply@plumb.capital>")) {
+		t.Fatalf("sender headers were not rewritten: %s", gotMessage)
 	}
 }
 
@@ -45,7 +48,7 @@ func TestMailRelayFromEnvAcceptsLegacyVariables(t *testing.T) {
 	t.Setenv("HOLODECK_SMTP_ADDRESS", "smtp.example.com")
 	t.Setenv("HOLODECK_SMTP_USERNAME", "user")
 	t.Setenv("HOLODECK_SMTP_PASSWORD", "pass")
-	t.Setenv("HOLODECK_SMTP_FROM", "Vela Demos <noreply@plumb.capital>")
+	t.Setenv("HOLODECK_SMTP_FROM", "Holodex <noreply@plumb.capital>")
 	relay, err := mailRelayFromEnv()
 	if err != nil || relay == nil {
 		t.Fatalf("legacy HOLODECK_SMTP_* configuration was rejected: %v", err)
