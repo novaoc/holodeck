@@ -58,6 +58,7 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 	env, _ := os.ReadFile(filepath.Join(root, "runtime.env"))
 	for _, key := range []string{
 		"SECRET_KEY_BASE=", "DB_HOST=holodex-db-store-abcd", "VELA_HOLODEX_PREVIEW=1",
+		"THRUSTER_LOG_REQUESTS=false",
 		"SMTP_ADDRESS=holodex", "SMTP_PORT=2525",
 		"SMTP_ENABLE_STARTTLS_AUTO=false", "MAILER_FROM=Vela Demos <noreply@plumb.capital>",
 	} {
