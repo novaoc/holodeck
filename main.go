@@ -436,6 +436,10 @@ func (s *server) startRailsDatabase(m *meta, root string) error {
 		"RAILS_SERVE_STATIC_FILES=true",
 		"VELA_HOLODEX_PREVIEW=1",
 		"APP_HOST=" + m.Slug + "." + s.domain,
+		// Holodex previews run as a single Rails application container. Enable
+		// Solid Queue's Puma plugin so deliver_later mail and other background
+		// jobs are actually processed without a separate worker container.
+		"SOLID_QUEUE_IN_PUMA=1",
 		// Thruster logs raw query strings, which can contain Rails signed IDs,
 		// OAuth state, and password-reset tokens. Rails already emits filtered
 		// request logs, so disable the redundant unsafe proxy request log.
