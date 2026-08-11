@@ -453,6 +453,11 @@ func (s *server) startRailsDatabase(m *meta, root string) error {
 		"POSTGRES_PASSWORD=" + password,
 		"DB_HOST=" + m.Database,
 		"DB_PORT=5432",
+		// The current foundation reads the standard DATABASE_URL; the DB_HOST /
+		// POSTGRES_* family above stays for apps generated from the previous
+		// template. Rails resolves both to the same sidecar, so injecting both
+		// is safe across template generations.
+		"DATABASE_URL=postgres://vela:" + password + "@" + m.Database + ":5432/vela_demo",
 	}, "\n") + "\n"
 	if s.mailRelay != nil {
 		env += strings.Join([]string{
