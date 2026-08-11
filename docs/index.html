@@ -306,6 +306,19 @@
       text-transform: uppercase;
     }
 
+    footer a {
+      min-height: 48px;
+      padding: 14px 4px;
+      color: inherit;
+      text-underline-offset: 4px;
+    }
+
+    .legal-links {
+      display: flex;
+      gap: 18px;
+      align-items: center;
+    }
+
     @media (max-width: 760px) {
       .shell { width: min(100% - 24px, 620px); padding-top: 18px; }
       .topbar { margin-bottom: 58px; }
@@ -374,7 +387,7 @@
 
     <footer>
       <span>Demos reset daily · repositories remain yours</span>
-      <span>Built small, looped until done</span>
+      <span class="legal-links"><a href="terms.html">Terms</a><a href="privacy.html">Privacy</a></span>
     </footer>
   </main>
 </body>
