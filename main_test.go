@@ -35,6 +35,7 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 	var calls [][]string
 	s := &server{
 		net:       "internal-test",
+		domain:    "demo.holode.xyz",
 		mailRelay: &mailRelay{from: "Vela Demos <noreply@plumb.capital>", hostname: "holodex"},
 		docker: func(_ context.Context, args ...string) (string, error) {
 			calls = append(calls, append([]string(nil), args...))
@@ -58,6 +59,7 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 	env, _ := os.ReadFile(filepath.Join(root, "runtime.env"))
 	for _, key := range []string{
 		"SECRET_KEY_BASE=", "DB_HOST=holodex-db-store-abcd", "VELA_HOLODEX_PREVIEW=1",
+		"APP_HOST=store-abcd.demo.holode.xyz",
 		"THRUSTER_LOG_REQUESTS=false",
 		"SMTP_ADDRESS=holodex", "SMTP_PORT=2525",
 		"SMTP_ENABLE_STARTTLS_AUTO=false", "MAILER_FROM=Vela Demos <noreply@plumb.capital>",

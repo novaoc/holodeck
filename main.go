@@ -435,6 +435,7 @@ func (s *server) startRailsDatabase(m *meta, root string) error {
 		"RAILS_ENV=production",
 		"RAILS_SERVE_STATIC_FILES=true",
 		"VELA_HOLODEX_PREVIEW=1",
+		"APP_HOST=" + m.Slug + "." + s.domain,
 		// Thruster logs raw query strings, which can contain Rails signed IDs,
 		// OAuth state, and password-reset tokens. Rails already emits filtered
 		// request logs, so disable the redundant unsafe proxy request log.
