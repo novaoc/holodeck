@@ -1,4 +1,4 @@
-module github.com/novaoc/holodeck
+module github.com/novaoc/holodex
 
 go 1.25.6
 

@@ -41,6 +41,25 @@ func TestMailRelayRewritesSenderAndForwardsOneRecipient(t *testing.T) {
 	}
 }
 
+func TestMailRelayFromEnvAcceptsLegacyVariables(t *testing.T) {
+	t.Setenv("HOLODECK_SMTP_ADDRESS", "smtp.example.com")
+	t.Setenv("HOLODECK_SMTP_USERNAME", "user")
+	t.Setenv("HOLODECK_SMTP_PASSWORD", "pass")
+	t.Setenv("HOLODECK_SMTP_FROM", "Vela Demos <noreply@plumb.capital>")
+	relay, err := mailRelayFromEnv()
+	if err != nil || relay == nil {
+		t.Fatalf("legacy HOLODECK_SMTP_* configuration was rejected: %v", err)
+	}
+	if relay.upstream != "smtp.example.com:587" || relay.hostname != "holodex" {
+		t.Fatalf("unexpected relay config: upstream=%q hostname=%q", relay.upstream, relay.hostname)
+	}
+	t.Setenv("HOLODEX_SMTP_ADDRESS", "smtp.current.example")
+	relay, err = mailRelayFromEnv()
+	if err != nil || relay.upstream != "smtp.current.example:587" {
+		t.Fatalf("HOLODEX_* must win over HOLODECK_*: upstream=%q err=%v", relay.upstream, err)
+	}
+}
+
 func TestMailRelayEnforcesDailyQuota(t *testing.T) {
 	relay := &mailRelay{from: "Vela <noreply@plumb.capital>", fromAddr: "noreply@plumb.capital", maxDaily: 1}
 	relay.send = func(string, []string, []byte) error { return nil }

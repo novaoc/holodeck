@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/mail"
 	stdsmtp "net/smtp"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +27,7 @@ type mailRelay struct {
 	password   string
 	from       string
 	fromAddr   string
+	hostname   string // internal hostname apps use to reach the relay
 	maxDaily   int
 	send       func(string, []string, []byte) error
 
@@ -37,35 +37,36 @@ type mailRelay struct {
 }
 
 func mailRelayFromEnv() (*mailRelay, error) {
-	address := strings.TrimSpace(os.Getenv("HOLODECK_SMTP_ADDRESS"))
-	username := os.Getenv("HOLODECK_SMTP_USERNAME")
-	password := os.Getenv("HOLODECK_SMTP_PASSWORD")
-	from := strings.TrimSpace(os.Getenv("HOLODECK_SMTP_FROM"))
+	address := strings.TrimSpace(setting("SMTP_ADDRESS"))
+	username := setting("SMTP_USERNAME")
+	password := setting("SMTP_PASSWORD")
+	from := strings.TrimSpace(setting("SMTP_FROM"))
 	if address == "" && username == "" && password == "" && from == "" {
 		return nil, nil
 	}
 	if address == "" || username == "" || password == "" || from == "" {
-		return nil, errors.New("HOLODECK_SMTP_ADDRESS, USERNAME, PASSWORD, and FROM must be set together")
+		return nil, errors.New("HOLODEX_SMTP_ADDRESS, USERNAME, PASSWORD, and FROM must be set together")
 	}
 	parsedFrom, err := mail.ParseAddress(from)
 	if err != nil || strings.ContainsAny(from, "\r\n") {
-		return nil, errors.New("HOLODECK_SMTP_FROM must be a valid single mailbox")
+		return nil, errors.New("HOLODEX_SMTP_FROM must be a valid single mailbox")
 	}
-	port := atoiOr(os.Getenv("HOLODECK_SMTP_PORT"), 587)
+	port := atoiOr(setting("SMTP_PORT"), 587)
 	if port < 1 || port > 65535 {
-		return nil, errors.New("HOLODECK_SMTP_PORT must be 1-65535")
+		return nil, errors.New("HOLODEX_SMTP_PORT must be 1-65535")
 	}
 	relay := &mailRelay{
-		listenAddr: envOr("HOLODECK_SMTP_LISTEN", ":2525"),
+		listenAddr: settingOr("SMTP_LISTEN", ":2525"),
 		upstream:   net.JoinHostPort(address, strconv.Itoa(port)),
 		username:   username,
 		password:   password,
 		from:       from,
 		fromAddr:   parsedFrom.Address,
-		maxDaily:   atoiOr(os.Getenv("HOLODECK_SMTP_MAX_DAILY"), 100),
+		hostname:   settingOr("SMTP_HOSTNAME", "holodex"),
+		maxDaily:   atoiOr(setting("SMTP_MAX_DAILY"), 100),
 	}
 	if relay.maxDaily < 1 {
-		return nil, errors.New("HOLODECK_SMTP_MAX_DAILY must be positive")
+		return nil, errors.New("HOLODEX_SMTP_MAX_DAILY must be positive")
 	}
 	relay.send = relay.sendUpstream
 	return relay, nil
@@ -73,7 +74,7 @@ func mailRelayFromEnv() (*mailRelay, error) {
 
 func (r *mailRelay) serve(listener net.Listener) error {
 	server := smtpserver.NewServer(r)
-	server.Domain = "holodeck"
+	server.Domain = r.hostname
 	server.MaxMessageBytes = maxPreviewMailBytes
 	server.MaxRecipients = 1
 	server.ReadTimeout = 30 * time.Second

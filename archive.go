@@ -39,11 +39,18 @@ type archiveParams struct {
 	Target     string
 	Dockerfile string
 	Port       int
+	// Legacy marks a request that arrived on the X-Holodeck-* header family.
+	// It selects the legacy HMAC canonical prefix; new clients use X-Holodex-*.
+	Legacy bool
 }
 
 func (p archiveParams) canonical() string {
+	prefix := "holodex-archive-v1"
+	if p.Legacy {
+		prefix = "holodeck-archive-v1"
+	}
 	return strings.Join([]string{
-		"holodeck-archive-v1",
+		prefix,
 		p.Action,
 		p.Name,
 		p.Target,
@@ -53,29 +60,42 @@ func (p archiveParams) canonical() string {
 	}, "\n")
 }
 
+// headerFamily returns the header prefix a request is using. A request is
+// legacy only when it carries a legacy signature and no current-family one:
+// the two families are never mixed within one request.
+func headerFamily(r *http.Request) (prefix string, legacy bool) {
+	if r.Header.Get("X-Holodex-Sign") == "" && r.Header.Get("X-Holodeck-Sign") != "" {
+		return "X-Holodeck-", true
+	}
+	return "X-Holodex-", false
+}
+
 func archiveParamsFromRequest(r *http.Request, action string) (archiveParams, error) {
+	family, legacy := headerFamily(r)
+	get := func(name string) string { return strings.TrimSpace(r.Header.Get(family + name)) }
 	p := archiveParams{
 		Action:     action,
-		Name:       strings.TrimSpace(r.Header.Get("X-Holodeck-Name")),
-		Target:     strings.TrimSpace(r.Header.Get("X-Holodeck-Target")),
-		Dockerfile: strings.TrimSpace(r.Header.Get("X-Holodeck-Dockerfile")),
+		Name:       get("Name"),
+		Target:     get("Target"),
+		Dockerfile: get("Dockerfile"),
+		Legacy:     legacy,
 	}
 	if p.Name == "" || len(p.Name) > 100 || strings.ContainsAny(p.Name, "\r\n") {
-		return p, errors.New("X-Holodeck-Name is required (max 100 characters)")
+		return p, errors.New(family + "Name is required (max 100 characters)")
 	}
 	if p.Dockerfile == "" {
 		p.Dockerfile = "Dockerfile"
 	}
 	if clean, ok := cleanArchivePath(p.Dockerfile); !ok || clean != p.Dockerfile {
-		return p, errors.New("invalid X-Holodeck-Dockerfile path")
+		return p, errors.New("invalid " + family + "Dockerfile path")
 	}
 	if p.Target != "" && !buildTargetRe.MatchString(p.Target) {
-		return p, errors.New("invalid X-Holodeck-Target")
+		return p, errors.New("invalid " + family + "Target")
 	}
-	if raw := strings.TrimSpace(r.Header.Get("X-Holodeck-Port")); raw != "" {
+	if raw := get("Port"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 || n > 65535 {
-			return p, errors.New("X-Holodeck-Port must be 1-65535")
+			return p, errors.New(family + "Port must be 1-65535")
 		}
 		p.Port = n
 	}
@@ -130,7 +150,11 @@ func (s *server) receiveArchive(w http.ResponseWriter, r *http.Request, p archiv
 	if n == 0 {
 		return "", "", errors.New("empty archive")
 	}
-	got, err := hex.DecodeString(strings.TrimSpace(r.Header.Get("X-Holodeck-Sign")))
+	sign := "X-Holodex-Sign"
+	if p.Legacy {
+		sign = "X-Holodeck-Sign"
+	}
+	got, err := hex.DecodeString(strings.TrimSpace(r.Header.Get(sign)))
 	if err != nil || subtle.ConstantTimeCompare(got, mac.Sum(nil)) != 1 {
 		return "", "", errors.New("unsigned archive refused")
 	}
@@ -292,15 +316,15 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	image := "holodeck/" + job + ":verify"
-	finalImage := "holodeck/" + job + ":verify-final"
+	image := "holodex/" + job + ":verify"
+	finalImage := "holodex/" + job + ":verify-final"
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, _ = s.docker(ctx, "rmi", "-f", image)
 		_, _ = s.docker(ctx, "rmi", "-f", finalImage)
 		cancel()
 	}()
-	args := []string{"build", "--progress=plain", "--label", "holodeck=1", "--label", "holodeck-job=1", "-f", dockerfilePath, "-t", image}
+	args := []string{"build", "--progress=plain", "--label", "holodex=1", "--label", "holodex-job=1", "-f", dockerfilePath, "-t", image}
 	if p.Target != "" {
 		args = append(args, "--target", p.Target)
 	}
@@ -315,7 +339,7 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		// a valid final image. This second build normally reuses every expensive
 		// layer from the test build.
 		finalArgs := []string{
-			"build", "--progress=plain", "--label", "holodeck=1", "--label", "holodeck-job=1",
+			"build", "--progress=plain", "--label", "holodex=1", "--label", "holodex-job=1",
 			"-f", dockerfilePath, "-t", finalImage, work,
 		}
 		finalLogs, finalErr := s.docker(ctx, finalArgs...)
@@ -357,7 +381,11 @@ func (s *server) handleArchiveDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer os.Remove(archive)
-	if !verifyReceipt(s.buildKey, strings.TrimSpace(r.Header.Get("X-Holodeck-Verify")), digest, time.Now()) {
+	receiptHeader := "X-Holodex-Verify"
+	if p.Legacy {
+		receiptHeader = "X-Holodeck-Verify"
+	}
+	if !verifyReceipt(s.buildKey, strings.TrimSpace(r.Header.Get(receiptHeader)), digest, time.Now()) {
 		http.Error(w, "deploy refused — this exact archive needs a fresh successful test-stage verification", http.StatusPreconditionFailed)
 		return
 	}
@@ -391,8 +419,8 @@ func (s *server) handleArchiveDeploy(w http.ResponseWriter, r *http.Request) {
 		if m.Port == 0 {
 			m.Port = 8080
 		}
-		m.Image = "holodeck/" + slug + ":latest"
-		m.Container = "holodeck-app-" + slug
+		m.Image = "holodex/" + slug + ":latest"
+		m.Container = "holodex-app-" + slug
 		if err := s.buildAndRun(&m, src); err != nil {
 			_ = os.RemoveAll(root)
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error()})

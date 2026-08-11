@@ -35,7 +35,7 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 	var calls [][]string
 	s := &server{
 		net:       "internal-test",
-		mailRelay: &mailRelay{from: "Vela Demos <noreply@plumb.capital>"},
+		mailRelay: &mailRelay{from: "Vela Demos <noreply@plumb.capital>", hostname: "holodex"},
 		docker: func(_ context.Context, args ...string) (string, error) {
 			calls = append(calls, append([]string(nil), args...))
 			return "ok", nil
@@ -45,7 +45,7 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 	if err := s.startRailsDatabase(&m, root); err != nil {
 		t.Fatal(err)
 	}
-	if m.Database != "holodeck-db-store-abcd" || m.DBVolume != "holodeck-dbdata-store-abcd" {
+	if m.Database != "holodex-db-store-abcd" || m.DBVolume != "holodex-dbdata-store-abcd" {
 		t.Fatalf("unexpected database resources: %#v", m)
 	}
 	info, err := os.Stat(filepath.Join(root, "runtime.env"))
@@ -57,13 +57,19 @@ func TestStartRailsDatabaseCreatesPrivatePreviewEnvironment(t *testing.T) {
 	}
 	env, _ := os.ReadFile(filepath.Join(root, "runtime.env"))
 	for _, key := range []string{
-		"SECRET_KEY_BASE=", "DB_HOST=holodeck-db-store-abcd", "VELA_HOLODECK_PREVIEW=1",
-		"STRIPE_PRIVATE_KEY=sk_test_", "SMTP_ADDRESS=holodeck", "SMTP_PORT=2525",
+		"SECRET_KEY_BASE=", "DB_HOST=holodex-db-store-abcd", "VELA_HOLODEX_PREVIEW=1",
+		"SMTP_ADDRESS=holodex", "SMTP_PORT=2525",
 		"SMTP_ENABLE_STARTTLS_AUTO=false", "MAILER_FROM=Vela Demos <noreply@plumb.capital>",
 	} {
 		if !strings.Contains(string(env), key) {
 			t.Fatalf("runtime env missing %s", key)
 		}
+	}
+	if strings.Contains(string(env), "STRIPE_") {
+		t.Fatalf("preview env must not contain Stripe entries:\n%s", env)
+	}
+	if !strings.Contains(strings.Join(calls[0], " "), "holodex=1") {
+		t.Fatalf("volume not labeled holodex=1: %#v", calls[0])
 	}
 	if len(calls) < 3 || calls[0][0] != "volume" || calls[1][0] != "run" || calls[2][0] != "exec" {
 		t.Fatalf("unexpected Docker sequence: %#v", calls)
@@ -80,8 +86,44 @@ func TestStopDatabaseOnlyTouchesOwnedNames(t *testing.T) {
 	if len(calls) != 0 {
 		t.Fatalf("touched unowned resources: %#v", calls)
 	}
-	s.stopDatabase("holodeck-db-demo", "holodeck-dbdata-demo")
+	s.stopDatabase("holodex-db-demo", "holodex-dbdata-demo")
 	if len(calls) != 2 {
 		t.Fatalf("owned resources not removed: %#v", calls)
+	}
+	calls = nil
+	s.stopDatabase("holodeck-db-demo", "holodeck-dbdata-demo")
+	if len(calls) != 2 {
+		t.Fatalf("legacy pre-rename resources must stay removable: %#v", calls)
+	}
+}
+
+func TestStopContainerAcceptsBothNameFamilies(t *testing.T) {
+	var calls [][]string
+	s := &server{docker: func(_ context.Context, args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		return "", nil
+	}}
+	s.stopContainer("vehicle-underwriter-app-1")
+	if len(calls) != 0 {
+		t.Fatalf("touched an unowned container: %#v", calls)
+	}
+	s.stopContainer("holodex-app-demo")
+	s.stopContainer("holodeck-app-demo")
+	if len(calls) != 2 {
+		t.Fatalf("owned containers not removed: %#v", calls)
+	}
+}
+
+func TestSettingPrefersHolodexAndFallsBackToLegacy(t *testing.T) {
+	t.Setenv("HOLODECK_EXAMPLE", "legacy")
+	if got := setting("EXAMPLE"); got != "legacy" {
+		t.Fatalf("legacy fallback broken: %q", got)
+	}
+	t.Setenv("HOLODEX_EXAMPLE", "current")
+	if got := setting("EXAMPLE"); got != "current" {
+		t.Fatalf("HOLODEX_* must win over HOLODECK_*: %q", got)
+	}
+	if got := settingOr("MISSING_EXAMPLE", "fallback"); got != "fallback" {
+		t.Fatalf("default broken: %q", got)
 	}
 }

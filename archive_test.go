@@ -144,10 +144,10 @@ func TestVerifyArchiveBuildIsSignedEphemeralAndTargeted(t *testing.T) {
 	p := archiveParams{Action: "verify", Name: "Safe Store", Target: "test", Dockerfile: "Dockerfile"}
 	req := httptest.NewRequest(http.MethodPost, "/api/verify", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer bearer")
-	req.Header.Set("X-Holodeck-Name", p.Name)
-	req.Header.Set("X-Holodeck-Target", p.Target)
-	req.Header.Set("X-Holodeck-Dockerfile", p.Dockerfile)
-	req.Header.Set("X-Holodeck-Sign", archiveSignature(key, p, body))
+	req.Header.Set("X-Holodex-Name", p.Name)
+	req.Header.Set("X-Holodex-Target", p.Target)
+	req.Header.Set("X-Holodex-Dockerfile", p.Dockerfile)
+	req.Header.Set("X-Holodex-Sign", archiveSignature(key, p, body))
 	rr := httptest.NewRecorder()
 	s.auth(s.handleVerify).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -163,7 +163,7 @@ func TestVerifyArchiveBuildIsSignedEphemeralAndTargeted(t *testing.T) {
 		t.Fatalf("docker calls=%v", calls)
 	}
 	joined := strings.Join(calls[0], " ")
-	if !strings.Contains(joined, "--target test") || !strings.Contains(joined, "holodeck-job=1") {
+	if !strings.Contains(joined, "--target test") || !strings.Contains(joined, "holodex-job=1") {
 		t.Fatalf("verification build lost safety metadata: %s", joined)
 	}
 	if !strings.Contains(joined, filepath.Join(s.data, "jobs")) {
@@ -191,14 +191,59 @@ func TestVerifyArchiveSignatureCoversMetadata(t *testing.T) {
 	signed := archiveParams{Action: "verify", Name: "Original", Target: "test", Dockerfile: "Dockerfile"}
 	req := httptest.NewRequest(http.MethodPost, "/api/verify", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer bearer")
-	req.Header.Set("X-Holodeck-Name", "Tampered")
-	req.Header.Set("X-Holodeck-Target", "test")
-	req.Header.Set("X-Holodeck-Dockerfile", "Dockerfile")
-	req.Header.Set("X-Holodeck-Sign", archiveSignature(key, signed, body))
+	req.Header.Set("X-Holodex-Name", "Tampered")
+	req.Header.Set("X-Holodex-Target", "test")
+	req.Header.Set("X-Holodex-Dockerfile", "Dockerfile")
+	req.Header.Set("X-Holodex-Sign", archiveSignature(key, signed, body))
 	rr := httptest.NewRecorder()
 	s.auth(s.handleVerify).ServeHTTP(rr, req)
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("metadata tampering should fail, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// The legacy X-Holodeck-* family (holodeck-archive-v1 canonical prefix) must
+// keep verifying during the rolling rename, and a legacy signature must not be
+// accepted under the current-family prefix.
+func TestVerifyArchiveAcceptsLegacyHeaderFamily(t *testing.T) {
+	key := []byte("test-build-key")
+	s := &server{
+		data: t.TempDir(), token: "bearer", buildKey: key, verifyTO: time.Minute,
+		docker: func(_ context.Context, _ ...string) (string, error) { return "ok", nil },
+	}
+	body := githubTar(t, tarEntry{name: "Dockerfile", body: "FROM scratch AS test\n"})
+	legacy := archiveParams{Action: "verify", Name: "Legacy Client", Target: "test", Dockerfile: "Dockerfile", Legacy: true}
+	if !strings.HasPrefix(legacy.canonical(), "holodeck-archive-v1\n") {
+		t.Fatalf("legacy canonical prefix wrong: %q", legacy.canonical())
+	}
+	current := legacy
+	current.Legacy = false
+	if !strings.HasPrefix(current.canonical(), "holodex-archive-v1\n") {
+		t.Fatalf("current canonical prefix wrong: %q", current.canonical())
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/verify", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer bearer")
+	req.Header.Set("X-Holodeck-Name", legacy.Name)
+	req.Header.Set("X-Holodeck-Target", legacy.Target)
+	req.Header.Set("X-Holodeck-Dockerfile", legacy.Dockerfile)
+	req.Header.Set("X-Holodeck-Sign", archiveSignature(key, legacy, body))
+	rr := httptest.NewRecorder()
+	s.auth(s.handleVerify).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("legacy family refused: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// The same legacy-prefix signature presented as the current family must fail.
+	req = httptest.NewRequest(http.MethodPost, "/api/verify", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer bearer")
+	req.Header.Set("X-Holodex-Name", legacy.Name)
+	req.Header.Set("X-Holodex-Target", legacy.Target)
+	req.Header.Set("X-Holodex-Dockerfile", legacy.Dockerfile)
+	req.Header.Set("X-Holodex-Sign", archiveSignature(key, legacy, body))
+	rr = httptest.NewRecorder()
+	s.auth(s.handleVerify).ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("legacy-prefix signature crossed families: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

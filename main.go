@@ -1,20 +1,20 @@
-// holodeck — Vela's demo sandbox. Hosts throwaway apps and wipes the whole
+// holodex — Vela's demo sandbox. Hosts throwaway apps and wipes the whole
 // deck once a day. Two kinds of app:
 //
 //   - static: a bundle with an index.html, served straight from disk.
-//   - container: a bundle with a Dockerfile — holodeck builds the image and
+//   - container: a bundle with a Dockerfile — holodex builds the image and
 //     runs it in a locked-down container, reverse-proxying the app's subdomain
 //     to it. This is how "any kind of app" (Node, Python, Go, …) runs while
 //     staying boxed in.
 //
 // Every app is deleted at the daily wipe (03:00 America/Mexico_City by
-// default); the GitHub repo is the permanent copy. holodeck sits behind Caddy
+// default); the GitHub repo is the permanent copy. holodex sits behind Caddy
 // (on-demand TLS gated by /api/tls-check) and is the single ingress — it routes
 // each <slug>.<domain> to the right app.
 //
 // PROVENANCE. Vela is the only thing allowed to deploy. Beyond the bearer
 // token, every deploy must carry an HMAC signature of its body made with a
-// shared build secret (X-Holodeck-Sign) — so a deploy is cryptographically
+// shared build secret (X-Holodex-Sign) — so a deploy is cryptographically
 // proven to come from Vela's own build pipeline, not from someone replaying the
 // endpoint or hosting an arbitrary external repo. A missing or wrong signature
 // is refused.
@@ -23,10 +23,17 @@
 //   - each app in its own container: cap-drop ALL, no-new-privileges, hard
 //     memory / CPU / pids caps, and an INTERNAL docker network with NO internet
 //     egress (deps are fetched at build time, not run time).
-//   - holodeck only ever touches docker resources it labels holodeck=1 or names
-//     holodeck-app-* — it never stops, removes, or inspects anything else on
-//     the host (this box also runs other production containers).
+//   - holodex only ever touches docker resources it labels holodex=1 or names
+//     holodex-app-* (legacy holodeck-* names stay removable during the rolling
+//     rename) — it never stops, removes, or inspects anything else on the host
+//     (this box also runs other production containers).
 //   - a hard cap on concurrent apps bounds total load on the shared box.
+//
+// ROLLING RENAME. The service was previously named holodeck. Until the last
+// legacy client and secret file is migrated: HOLODEX_* settings fall back to
+// HOLODECK_*, the X-Holodeck-* header family (with its holodeck-archive-v1
+// HMAC prefix) is still verified, and cleanup guards recognize both resource
+// name families so old previews remain removable.
 //
 // Residual risk is real: a container is a limit, not a perfect boundary, and
 // build steps run arbitrary code. This is a hobby demo deck on a private
@@ -119,27 +126,27 @@ func main() {
 		log.Fatal(err)
 	}
 	s := &server{
-		data:      envOr("HOLODECK_DATA", "/srv/holodeck"),
-		token:     os.Getenv("HOLODECK_TOKEN"),
-		buildKey:  []byte(os.Getenv("HOLODECK_BUILD_SECRET")),
-		domain:    envOr("HOLODECK_DOMAIN", "demo.holode.xyz"),
-		wipeHour:  atoiOr(os.Getenv("HOLODECK_WIPE_HOUR"), 3),
-		net:       envOr("HOLODECK_NET", "holodeck-net"),
-		mem:       envOr("HOLODECK_MEM", "512m"),
-		cpus:      envOr("HOLODECK_CPUS", "0.5"),
-		pids:      envOr("HOLODECK_PIDS", "256"),
-		maxApps:   atoiOr(os.Getenv("HOLODECK_MAX_APPS"), 15),
-		buildTO:   time.Duration(atoiOr(os.Getenv("HOLODECK_BUILD_TIMEOUT_S"), 300)) * time.Second,
-		verifyTO:  time.Duration(atoiOr(os.Getenv("HOLODECK_VERIFY_TIMEOUT_S"), 900)) * time.Second,
+		data:      settingOr("DATA", "/srv/holodeck"),
+		token:     setting("TOKEN"),
+		buildKey:  []byte(setting("BUILD_SECRET")),
+		domain:    settingOr("DOMAIN", "demo.holode.xyz"),
+		wipeHour:  atoiOr(setting("WIPE_HOUR"), 3),
+		net:       settingOr("NET", "holodeck-net"),
+		mem:       settingOr("MEM", "512m"),
+		cpus:      settingOr("CPUS", "0.5"),
+		pids:      settingOr("PIDS", "256"),
+		maxApps:   atoiOr(setting("MAX_APPS"), 15),
+		buildTO:   time.Duration(atoiOr(setting("BUILD_TIMEOUT_S"), 300)) * time.Second,
+		verifyTO:  time.Duration(atoiOr(setting("VERIFY_TIMEOUT_S"), 900)) * time.Second,
 		mailRelay: relay,
 		docker:    dockerOut,
 	}
 	if s.token == "" || len(s.buildKey) == 0 {
-		log.Fatal("HOLODECK_TOKEN and HOLODECK_BUILD_SECRET are required")
+		log.Fatal("HOLODEX_TOKEN and HOLODEX_BUILD_SECRET are required")
 	}
-	loc, err := time.LoadLocation(envOr("HOLODECK_TZ", "America/Mexico_City"))
+	loc, err := time.LoadLocation(settingOr("TZ", "America/Mexico_City"))
 	if err != nil {
-		log.Fatalf("bad HOLODECK_TZ: %v", err)
+		log.Fatalf("bad HOLODEX_TZ: %v", err)
 	}
 	s.loc = loc
 	if relay != nil {
@@ -169,14 +176,23 @@ func main() {
 	mux.HandleFunc("GET /api/tls-check", s.handleTLSCheck)
 	mux.HandleFunc("/", s.handleServe)
 
-	addr := envOr("HOLODECK_ADDR", ":8700")
-	log.Printf("holodeck up on %s — apps at *.%s, daily wipe %02d:00 %s, caps mem=%s cpus=%s",
+	addr := settingOr("ADDR", ":8700")
+	log.Printf("holodex up on %s — apps at *.%s, daily wipe %02d:00 %s, caps mem=%s cpus=%s",
 		addr, s.domain, s.wipeHour, s.loc, s.mem, s.cpus)
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
 
-func envOr(k, def string) string {
-	if v := os.Getenv(k); v != "" {
+// setting reads HOLODEX_<name>, falling back to the legacy HOLODECK_<name>
+// during the rolling rename so existing secret files keep working.
+func setting(name string) string {
+	if v := os.Getenv("HOLODEX_" + name); v != "" {
+		return v
+	}
+	return os.Getenv("HOLODECK_" + name)
+}
+
+func settingOr(name, def string) string {
+	if v := setting(name); v != "" {
 		return v
 	}
 	return def
@@ -221,8 +237,17 @@ func cleanPath(p string) (string, bool) {
 	return p, true
 }
 
+// signHeader returns the provenance signature, preferring the X-Holodex-Sign
+// header and accepting the legacy X-Holodeck-Sign during the rolling rename.
+func signHeader(r *http.Request) string {
+	if v := r.Header.Get("X-Holodex-Sign"); v != "" {
+		return v
+	}
+	return r.Header.Get("X-Holodeck-Sign")
+}
+
 // verifySig checks the provenance HMAC: hex(hmac-sha256(buildKey, body)) in the
-// X-Holodeck-Sign header. Proves the deploy came from Vela's pipeline and that
+// X-Holodex-Sign header. Proves the deploy came from Vela's pipeline and that
 // the body wasn't altered in flight.
 func (s *server) verifySig(body []byte, header string) bool {
 	want := hmac.New(sha256.New, s.buildKey)
@@ -240,8 +265,8 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "body too large or unreadable", http.StatusBadRequest)
 		return
 	}
-	if !s.verifySig(body, r.Header.Get("X-Holodeck-Sign")) {
-		http.Error(w, "unsigned deploy refused — holodeck only accepts apps signed by Vela's own build pipeline", http.StatusForbidden)
+	if !s.verifySig(body, signHeader(r)) {
+		http.Error(w, "unsigned deploy refused — holodex only accepts apps signed by Vela's own build pipeline", http.StatusForbidden)
 		return
 	}
 	var req deployReq
@@ -306,8 +331,8 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		if m.Port == 0 {
 			m.Port = 8080
 		}
-		m.Image = "holodeck/" + slug + ":latest"
-		m.Container = "holodeck-app-" + slug
+		m.Image = "holodex/" + slug + ":latest"
+		m.Container = "holodex-app-" + slug
 		if err := s.buildAndRun(&m, src); err != nil {
 			_ = os.RemoveAll(filepath.Join(s.data, "apps", slug))
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -341,7 +366,7 @@ func (s *server) buildAndRun(m *meta, src string) error {
 	bctx, bcancel := context.WithTimeout(context.Background(), s.buildTO)
 	defer bcancel()
 	s.buildMu.Lock()
-	out, buildErr := s.docker(bctx, "build", "--label", "holodeck=1", "-t", m.Image, src)
+	out, buildErr := s.docker(bctx, "build", "--label", "holodex=1", "-t", m.Image, src)
 	s.buildMu.Unlock()
 	if buildErr != nil {
 		if bctx.Err() == context.DeadlineExceeded {
@@ -361,7 +386,7 @@ func (s *server) buildAndRun(m *meta, src string) error {
 	args := []string{
 		"run", "-d",
 		"--name", m.Container,
-		"--label", "holodeck=1",
+		"--label", "holodex=1",
 		"--network", s.net,
 		"--memory", s.mem, "--memory-swap", s.mem,
 		"--cpus", s.cpus,
@@ -400,16 +425,16 @@ func randomHex(bytes int) string {
 // startRailsDatabase gives each throw-away Rails preview its own PostgreSQL
 // container, volume, and generated runtime secrets. Nothing is supplied by or
 // committed to the application repository, and all resources are removed with
-// the demo. Stripe values are explicitly non-working preview test identifiers:
-// the no-egress runtime can show the checkout flow but cannot contact Stripe.
+// the demo. No Stripe keys or webhook secrets are injected: previews run the
+// local test checkout, and a self-hoster supplies their own Stripe credentials.
 func (s *server) startRailsDatabase(m *meta, root string) error {
-	m.Database = "holodeck-db-" + m.Slug
-	m.DBVolume = "holodeck-dbdata-" + m.Slug
+	m.Database = "holodex-db-" + m.Slug
+	m.DBVolume = "holodex-dbdata-" + m.Slug
 	password := randomHex(24)
 	env := strings.Join([]string{
 		"RAILS_ENV=production",
 		"RAILS_SERVE_STATIC_FILES=true",
-		"VELA_HOLODECK_PREVIEW=1",
+		"VELA_HOLODEX_PREVIEW=1",
 		"SECRET_KEY_BASE=" + randomHex(64),
 		"ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=" + randomHex(32),
 		"ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=" + randomHex(32),
@@ -419,12 +444,10 @@ func (s *server) startRailsDatabase(m *meta, root string) error {
 		"POSTGRES_PASSWORD=" + password,
 		"DB_HOST=" + m.Database,
 		"DB_PORT=5432",
-		"STRIPE_PRIVATE_KEY=sk_test_holodeck_preview_no_egress",
-		"STRIPE_STOREFRONT_WEBHOOK_SECRET=whsec_holodeck_preview_no_egress",
 	}, "\n") + "\n"
 	if s.mailRelay != nil {
 		env += strings.Join([]string{
-			"SMTP_ADDRESS=holodeck",
+			"SMTP_ADDRESS=" + s.mailRelay.hostname,
 			"SMTP_PORT=2525",
 			"SMTP_ENABLE_STARTTLS_AUTO=false",
 			"MAILER_FROM=" + s.mailRelay.from,
@@ -436,12 +459,12 @@ func (s *server) startRailsDatabase(m *meta, root string) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	if out, err := s.docker(ctx, "volume", "create", "--label", "holodeck=1", m.DBVolume); err != nil {
+	if out, err := s.docker(ctx, "volume", "create", "--label", "holodex=1", m.DBVolume); err != nil {
 		return fmt.Errorf("couldn't create Rails database volume: %s", tail(out, 500))
 	}
 	args := []string{
 		"run", "-d", "--name", m.Database,
-		"--label", "holodeck=1", "--network", s.net,
+		"--label", "holodex=1", "--network", s.net,
 		"--memory", "256m", "--memory-swap", "256m", "--cpus", "0.5", "--pids-limit", "128",
 		"--security-opt", "no-new-privileges", "--restart", "unless-stopped",
 		"-e", "POSTGRES_DB=vela_demo", "-e", "POSTGRES_USER=vela", "-e", "POSTGRES_PASSWORD=" + password,
@@ -515,7 +538,7 @@ func (s *server) handleServe(w http.ResponseWriter, r *http.Request) {
 	slug := strings.TrimSuffix(host, "."+s.domain)
 	m, ok := s.readMeta(slug)
 	if !ok {
-		http.Error(w, "this holodeck program has ended (the deck wipes daily)", http.StatusNotFound)
+		http.Error(w, "this holodex program has ended (the deck wipes daily)", http.StatusNotFound)
 		return
 	}
 	s.activity.Store(slug, time.Now()) // slot LRU: any visit counts as activity
@@ -576,9 +599,9 @@ func (s *server) landing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>holodeck</title>
+	fmt.Fprintf(w, `<!doctype html><meta charset="utf-8"><title>Holodex</title>
 <style>body{font-family:system-ui;background:#0A0D13;color:#F5F6F8;display:grid;place-items:center;min-height:100vh;margin:0}main{text-align:center;line-height:1.7}small{color:#8b93a3}</style>
-<main><h1>holodeck</h1><p>Vela's demo deck — ask her to build something and put it online.</p>
+<main><h1>Holodex</h1><p>Vela's demo deck — ask her to build something and put it online.</p>
 <small>the whole deck wipes at %02d:00 %s daily · the repo is the keepsake</small></main>`, s.wipeHour, s.loc)
 }
 
@@ -635,7 +658,7 @@ func (s *server) runningCount() int {
 }
 
 // lastActive is when a slug last saw a request (deploy time counts as active;
-// after a holodeck restart, boot time stands in so fresh idleness is measured).
+// after a holodex restart, boot time stands in so fresh idleness is measured).
 func (s *server) lastActive(m meta) time.Time {
 	if t, ok := s.activity.Load(m.Slug); ok {
 		return t.(time.Time)
@@ -695,10 +718,22 @@ func (s *server) destroy(slug string) {
 	log.Printf("destroyed %s", slug)
 }
 
-// stopContainer never touches anything not named holodeck-app-* — critical on a
-// box shared with production.
+// owned reports whether a docker resource name carries one of our prefixes.
+// Both the holodex-* and legacy holodeck-* families are recognized so previews
+// created before the rename stay removable.
+func owned(name string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// stopContainer never touches anything not named holodex-app-* (or the legacy
+// holodeck-app-*) — critical on a box shared with production.
 func (s *server) stopContainer(name string) {
-	if name == "" || !strings.HasPrefix(name, "holodeck-app-") {
+	if name == "" || !owned(name, "holodex-app-", "holodeck-app-") {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -707,12 +742,12 @@ func (s *server) stopContainer(name string) {
 }
 
 func (s *server) stopDatabase(name, volume string) {
-	if name != "" && strings.HasPrefix(name, "holodeck-db-") {
+	if name != "" && owned(name, "holodex-db-", "holodeck-db-") {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, _ = s.docker(ctx, "rm", "-f", name)
 		cancel()
 	}
-	if volume != "" && strings.HasPrefix(volume, "holodeck-dbdata-") {
+	if volume != "" && owned(volume, "holodex-dbdata-", "holodeck-dbdata-") {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		_, _ = s.docker(ctx, "volume", "rm", "-f", volume)
 		cancel()
