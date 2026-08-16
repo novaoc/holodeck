@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Vela · architecture and code</title>
-  <meta name="description" content="How Vela works: a Go Discord agent on a 256 MB RISC-V board — tool loop, injection phase guard, signed deploys, and graceful hot-swap.">
+  <title>Vela · install and architecture</title>
+  <meta name="description" content="How Vela works: an agent harness in one static Go binary — install it yourself, swappable model, tool loop, injection phase guard, optional deploy plugins.">
   <link rel="stylesheet" href="docs.css">
   <link rel="icon" href="vela-orbits.svg" type="image/svg+xml">
 </head>
 <body>
   <div class="docs-shell">
     <header class="docs-top">
-      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela / Holodex</a>
+      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela</a>
       <nav class="docs-nav" aria-label="Documentation">
         <a href="docs.html">Overview</a>
         <a href="docs-vela.html" aria-current="page">Vela</a>
@@ -24,6 +24,8 @@
       <aside class="docs-aside">
         <nav aria-label="On this page">
           <span class="aside-title">Vela</span>
+          <a href="#install">Install it yourself</a>
+          <a href="#plugins">Optional plugins</a>
           <a href="#hardware">The hardware constraint</a>
           <a href="#loop">The agent loop</a>
           <a href="#phases">Injection phase guard</a>
@@ -36,11 +38,34 @@
       </aside>
 
       <main class="docs-main">
-        <p class="eyebrow">01 / The agent</p>
+        <p class="eyebrow">01 / The harness</p>
         <h1>Vela</h1>
-        <p class="lede">A Discord agent written in Go, running as a single static binary on a LicheeRV Nano — one RISC-V core, 256 MB of RAM, powered from a USB port. It holds the conversation, decides what to build, and signs everything it ships.</p>
+        <p class="lede">An agent harness in one static Go binary: the tool-calling loop, the tool belt, the safety rails, and persistent memory. The model is a swappable backend — anything speaking the OpenAI chat API — and Discord is the front end it ships with. It runs anywhere Go cross-compiles; the reference deployment is a LicheeRV Nano with one RISC-V core and 256 MB of RAM, powered from a USB port.</p>
 
         <a class="repo-link" href="https://github.com/novaoc/vela">novaoc/vela ↗</a>
+
+        <h2 id="install">Install it yourself</h2>
+        <p>Two things are genuinely required: somewhere to talk to it, and a model to think with. Everything else on this site is optional.</p>
+        <ol>
+          <li><b>Make a Discord bot.</b> <a href="https://discord.com/developers/applications">discord.com/developers/applications</a> → New Application → Bot. Copy the token, enable the <b>Message Content</b> intent, and invite it with <i>Send Messages</i>, <i>Read Message History</i>, and <i>Attach Files</i>.</li>
+          <li><b>Get a model key.</b> Any OpenAI-compatible endpoint works — DeepSeek's own API, or an aggregator. Tool calling is required; reasoning-only endpoints will not work.</li>
+          <li><b>Build and run.</b> One binary, one env file, no runtime dependencies:</li>
+        </ol>
+<pre><code>git clone https://github.com/novaoc/vela &amp;&amp; cd vela
+make                      # host build; `make riscv64` cross-compiles for the Nano
+cp vela.env.example vela.env
+# edit vela.env: DISCORD_TOKEN, DEEPSEEK_API_KEY, VELA_CODERS
+./vela</code></pre>
+        <p>That is a working agent: it answers when mentioned, searches and reads the web, makes charts and images, remembers things across restarts, and keeps per-channel history as plain files on disk. To keep it running unattended, copy the service file from <code>deploy/</code> — <code>S99vela</code> for SysVinit images, <code>vela.service</code> for systemd.</p>
+        <p class="note">Set <code>VELA_CODERS</code> to your own Discord user id. The shell and file tools are root-level trust on the box, so an empty allowlist disables that whole capability rather than defaulting it open.</p>
+
+        <h2 id="plugins">Optional plugins</h2>
+        <p>Vela is useful with nothing attached. Two add-ons extend her from “agent that talks” to “agent that ships”, and each is independent:</p>
+        <ul>
+          <li><b>A Rails foundation</b> (<code>VELA_RAILS_TEMPLATE</code>, <code>VELA_FOUNDATION_ROOT</code>) — a template repository generated apps fork from, so a build starts from real auth, payments, and design instead of an empty directory. Without it, Vela still creates and edits repositories through the GitHub API; she just has no house stack to build from.</li>
+          <li><b>A <a href="docs-holodex.html">Holodex</a> deploy target</b> (<code>VELA_SANDBOX_URL</code>, <code>_TOKEN</code>, <code>_SECRET</code>) — somewhere to host verified demos. Without it, a build still ends in a public repository with passing tests; there is simply no live URL at the end.</li>
+        </ul>
+        <p><b>What this means for <code>/request</code>:</b> the command works either way, and the plan Vela proposes adapts to what is configured. With a Holodex target, “done” means a public repo <i>and</i> a live demo link. Without one, she says so up front and “done” is the repository plus instructions to run it locally — she will not promise a demo she cannot deliver. If you want the demo half, <a href="docs-holodex.html">add Holodex</a>; it is one binary and a reverse proxy on any box you already own.</p>
 
         <h2 id="hardware">The hardware constraint</h2>
         <p>Most of Vela's design follows from the board. 256 MB of RAM and a single core mean it cannot bundle a Rails app, run a PostgreSQL suite, or build a Docker image — and the stock image ships without <code>git</code>. So Vela does none of those things. It talks to GitHub over the REST API, and it hands heavy builds to Holodex.</p>

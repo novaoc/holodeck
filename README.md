@@ -1,10 +1,37 @@
 # Holodex
 
-Vela's demo sandbox — a single Go binary that hosts throwaway apps and wipes
-the whole deck once a day. [Vela](https://github.com/novaoc/vela)
-POSTs an app's files to `/api/deploy` and gets back a live URL on its own
-subdomain (`<slug>.demo.holode.xyz`). The GitHub repo of whatever was built is
-the permanent copy — the Holodex program always ends.
+**An optional deploy target for [Vela](https://github.com/novaoc/vela)** — a
+single Go binary that hosts throwaway apps and wipes the whole deck once a
+day. Vela POSTs an app to it and gets back a live URL on its own subdomain
+(`<slug>.demo.holode.xyz`). The GitHub repo of whatever was built is the
+permanent copy — the Holodex program always ends.
+
+> **You do not need this to run Vela.** Vela is an agent harness; she
+> researches, writes, charts, and publishes GitHub repositories on her own.
+> Holodex answers one extra question — *can I click it?* — by turning a
+> verified build into a live demo. Without it, `/request` finishes at a public
+> repository with passing tests and says so up front. Add Holodex when you
+> want the demo half; nothing else in the harness depends on it.
+
+## Adding it to a Vela install
+
+Holodex needs a box you already own with Docker and a domain pointed at it. It
+orchestrates the host's Docker daemon, so it runs with the socket mounted —
+give it a machine you are willing to let build arbitrary code.
+
+Build and run it (see [Deploy](#deploy) for the full command), then point a
+wildcard `*.demo.<your-domain>` at the box through a reverse proxy that asks
+`/api/tls-check` before minting certificates. Finally tell Vela it exists:
+
+```bash
+VELA_SANDBOX_URL=https://api.<your-domain>
+VELA_SANDBOX_TOKEN=<same value as HOLODEX_TOKEN>
+VELA_SANDBOX_SECRET=<same value as HOLODEX_BUILD_SECRET>
+```
+
+Restart Vela and the deploy tools appear in her belt automatically. The build
+secret is what makes a deploy provably hers, so it lives on her machine and on
+this server — nowhere else, and never in a repository.
 
 For repository-sized applications, Vela streams an immutable GitHub commit
 archive directly to Holodex. The GitHub token stays on Vela's board. Holodex

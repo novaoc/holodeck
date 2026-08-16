@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Holodex · architecture and code</title>
+  <title>Holodex · optional deploy target for Vela</title>
   <meta name="description" content="How Holodex works: a single Go binary that verifies signed source, builds it in Docker, and hosts it with no runtime internet — plus slots, daily wipe, and a private mail relay.">
   <link rel="stylesheet" href="docs.css">
   <link rel="icon" href="vela-orbits.svg" type="image/svg+xml">
@@ -11,7 +11,7 @@
 <body>
   <div class="docs-shell">
     <header class="docs-top">
-      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela / Holodex</a>
+      <a class="brand" href="index.html"><img src="vela-orbits.svg" alt="">Vela</a>
       <nav class="docs-nav" aria-label="Documentation">
         <a href="docs.html">Overview</a>
         <a href="docs-vela.html">Vela</a>
@@ -24,6 +24,7 @@
       <aside class="docs-aside">
         <nav aria-label="On this page">
           <span class="aside-title">Holodex</span>
+          <a href="#addit">Adding it to your Vela</a>
           <a href="#shape">Shape of the program</a>
           <a href="#provenance">Provenance</a>
           <a href="#verify">Verify before deploy</a>
@@ -38,11 +39,33 @@
       </aside>
 
       <main class="docs-main">
-        <p class="eyebrow">02 / The stage</p>
+        <p class="eyebrow">02 / Optional plugin</p>
         <h1>Holodex</h1>
         <p class="lede">One Go binary on a rented server. It accepts signed source from Vela, builds it, and runs it in a container with hard resource caps and no internet — then deletes everything once a day.</p>
 
         <a class="repo-link" href="https://github.com/novaoc/holodex">novaoc/holodex ↗</a>
+
+        <p class="note"><strong>Optional.</strong> Vela runs perfectly well without this — she still researches, writes, charts, and publishes GitHub repositories. Holodex only answers the question “can I click it?”. Add it when you want verified builds to end in a live URL instead of a clone command; skip it and <code>/request</code> simply finishes at the repository. Nothing else in the harness depends on it.</p>
+
+        <h2 id="addit">Adding it to your Vela</h2>
+        <p>Holodex needs a box you already own, with Docker and a domain pointed at it. It runs Docker on the host, so it mounts the socket — give it a machine you are willing to let build arbitrary code.</p>
+<pre><code># on the server
+make linux
+docker network create --internal holodeck-net
+scp holodex-linux-amd64 root@&lt;server&gt;:/srv/holodeck/bin/holodex
+
+docker run -d --name holodex --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /srv/holodeck:/srv/holodeck \
+  -e HOLODEX_TOKEN=&lt;deploy bearer&gt; \
+  -e HOLODEX_BUILD_SECRET=&lt;shared HMAC secret&gt; \
+  -e HOLODEX_DOMAIN=demo.example.com \
+  &lt;image&gt; /srv/holodeck/bin/holodex</code></pre>
+        <p>Then point a wildcard <code>*.demo.example.com</code> at the box through a reverse proxy that asks <code>/api/tls-check</code> before minting certificates, and tell Vela about it in her env file:</p>
+<pre><code>VELA_SANDBOX_URL=https://api.example.com
+VELA_SANDBOX_TOKEN=&lt;same as HOLODEX_TOKEN&gt;
+VELA_SANDBOX_SECRET=&lt;same as HOLODEX_BUILD_SECRET&gt;</code></pre>
+        <p>Restart Vela and the deploy tools appear in her belt automatically. The build secret is what makes a deploy provably hers, so it lives on her machine and on the server — nowhere else, and never in a repository.</p>
 
         <h2 id="shape">Shape of the program</h2>
         <p>Holodex is a plain <code>net/http</code> server with no framework and no database. State is the filesystem: each application is a directory holding its source and a <code>meta.json</code>. It orchestrates the host's Docker daemon by shelling out to the CLI, which is why it runs with the Docker socket mounted — and why its blast-radius discipline is written into the code rather than assumed.</p>
