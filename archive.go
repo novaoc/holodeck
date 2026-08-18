@@ -302,18 +302,25 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	defer os.Remove(archive)
 
+	status, body := s.verifyArchive(p, archive, digest)
+	writeJSON(w, status, body)
+}
+
+// verifyArchive runs the whole verification pipeline on an archive already on
+// disk: extract, build the test target, build the deployable image, mint the
+// receipt. Shared by the synchronous handler above and the async job runner,
+// so the two paths can never drift apart.
+func (s *server) verifyArchive(p archiveParams, archive, digest string) (int, map[string]any) {
 	job := slugify("verify-" + p.Name)
 	work := filepath.Join(s.data, "jobs", job)
 	defer os.RemoveAll(work)
 	total, files, err := extractGitHubArchive(archive, work)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
-		return
+		return http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()}
 	}
 	dockerfilePath := filepath.Join(work, filepath.FromSlash(p.Dockerfile))
 	if st, err := os.Stat(dockerfilePath); err != nil || st.IsDir() {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "Dockerfile not found at " + p.Dockerfile})
-		return
+		return http.StatusBadRequest, map[string]any{"ok": false, "error": "Dockerfile not found at " + p.Dockerfile}
 	}
 
 	image := "holodex/" + job + ":verify"
@@ -353,16 +360,15 @@ func (s *server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		if ctx.Err() == context.DeadlineExceeded {
 			msg = fmt.Sprintf("verification timed out after %s", s.verifyTO)
 		}
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+		return http.StatusUnprocessableEntity, map[string]any{
 			"ok": false, "error": msg, "logs": tail(logs, maxBuildLog), "duration_ms": duration,
-		})
-		return
+		}
 	}
 	log.Printf("verified %s (%d files, %dKB, target=%s, %dms)", p.Name, files, total/1024, p.Target, duration)
-	writeJSON(w, http.StatusOK, map[string]any{
+	return http.StatusOK, map[string]any{
 		"ok": true, "logs": tail(logs, maxBuildLog), "files": files, "source_bytes": total, "duration_ms": duration,
 		"receipt": makeVerifyReceipt(s.buildKey, digest, p.Target, time.Now()),
-	})
+	}
 }
 
 func (s *server) handleArchiveDeploy(w http.ResponseWriter, r *http.Request) {
@@ -390,21 +396,27 @@ func (s *server) handleArchiveDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	status, body := s.deployVerifiedArchive(p, archive)
+	writeJSON(w, status, body)
+}
+
+// deployVerifiedArchive turns an already receipt-checked archive into a
+// running app. Shared by the upload handler above and the reference-deploy
+// path, which re-checks the receipt against the retained job archive instead.
+func (s *server) deployVerifiedArchive(p archiveParams, archive string) (int, map[string]any) {
 	slug := slugify(p.Name)
 	root := filepath.Join(s.data, "apps", slug)
 	src := filepath.Join(root, "src")
 	total, files, err := extractGitHubArchive(archive, src)
 	if err != nil {
 		_ = os.RemoveAll(root)
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
+		return http.StatusBadRequest, map[string]any{"error": err.Error()}
 	}
 	dockerfile, dockerErr := os.ReadFile(filepath.Join(src, "Dockerfile"))
 	_, indexErr := os.Stat(filepath.Join(src, "index.html"))
 	if dockerErr != nil && indexErr != nil {
 		_ = os.RemoveAll(root)
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "archive needs a root Dockerfile or index.html"})
-		return
+		return http.StatusBadRequest, map[string]any{"error": "archive needs a root Dockerfile or index.html"}
 	}
 
 	m := meta{Name: p.Name, Slug: slug, Created: time.Now().UTC(), State: "running"}
@@ -423,8 +435,7 @@ func (s *server) handleArchiveDeploy(w http.ResponseWriter, r *http.Request) {
 		m.Container = "holodex-app-" + slug
 		if err := s.buildAndRun(&m, src); err != nil {
 			_ = os.RemoveAll(root)
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"error": err.Error()})
-			return
+			return http.StatusUnprocessableEntity, map[string]any{"error": err.Error()}
 		}
 	} else {
 		m.Kind = "static"
@@ -432,10 +443,10 @@ func (s *server) handleArchiveDeploy(w http.ResponseWriter, r *http.Request) {
 	s.writeMeta(m)
 	s.activity.Store(slug, time.Now())
 	log.Printf("deployed archive %s (%s, %d files, %dKB)", slug, m.Kind, files, total/1024)
-	writeJSON(w, http.StatusOK, map[string]any{
+	return http.StatusOK, map[string]any{
 		"url": fmt.Sprintf("https://%s.%s/", slug, s.domain), "slug": slug, "kind": m.Kind,
 		"expires": s.nextWipe().Format(time.RFC3339), "files": files, "source_bytes": total,
-	})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

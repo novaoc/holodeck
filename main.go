@@ -92,6 +92,10 @@ type server struct {
 	verifyTO  time.Duration
 	mailRelay *mailRelay
 	docker    func(context.Context, ...string) (string, error)
+	jobs      *jobStore // async reference verifications (jobs.go)
+	// fetchRef downloads a public commit tarball; injectable for tests.
+	// Nil means the real GitHub fetch.
+	fetchRef func(repo, sha, destDir string) (path, digest string, err error)
 	proxies   sync.Map
 	activity  sync.Map // slug -> time.Time of last request (slot-eviction LRU)
 	deployMu  sync.Mutex
@@ -140,6 +144,7 @@ func main() {
 		verifyTO:  time.Duration(atoiOr(setting("VERIFY_TIMEOUT_S"), 900)) * time.Second,
 		mailRelay: relay,
 		docker:    dockerOut,
+		jobs:      newJobStore(),
 	}
 	if s.token == "" || len(s.buildKey) == 0 {
 		log.Fatal("HOLODEX_TOKEN and HOLODEX_BUILD_SECRET are required")
@@ -166,11 +171,20 @@ func main() {
 	}
 	go s.dailyWipe()
 	go s.sweep() // backstop if a scheduled wipe was missed (box down at 3am)
+	go func() {  // expired async jobs and their retained tarballs
+		for {
+			time.Sleep(10 * time.Minute)
+			s.jobs.gc(time.Now())
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/deploy", s.auth(s.handleDeploy))
 	mux.HandleFunc("POST /api/deploy/archive", s.auth(s.handleArchiveDeploy))
 	mux.HandleFunc("POST /api/verify", s.auth(s.handleVerify))
+	mux.HandleFunc("POST /api/verify/ref", s.auth(s.handleRefVerify))
+	mux.HandleFunc("GET /api/jobs/{id}", s.auth(s.handleJobStatus))
+	mux.HandleFunc("POST /api/deploy/ref", s.auth(s.handleRefDeploy))
 	mux.HandleFunc("GET /api/apps", s.auth(s.handleList))
 	mux.HandleFunc("DELETE /api/apps/{slug}", s.auth(s.handleDelete))
 	mux.HandleFunc("GET /api/tls-check", s.handleTLSCheck)
