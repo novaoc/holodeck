@@ -255,6 +255,8 @@ type jobStore struct {
 	seenSigs map[string]sigUse
 	// ticketUses counts verifications spent per worker-job ticket.
 	ticketUses map[string]int
+	// usedDeployTickets enforces one deploy per deploy ticket.
+	usedDeployTickets map[string]bool
 }
 
 type sigUse struct {
@@ -465,8 +467,31 @@ func (s *server) handleJobStatus(w http.ResponseWriter, r *http.Request) {
 // receipt must match the retained bytes' digest — the same gate as an upload
 // deploy, minus the upload.
 func (s *server) handleRefDeploy(w http.ResponseWriter, r *http.Request) {
-	p, err := refParamsFromRequest(r, s.buildKey, "deploy")
-	if err != nil {
+	var p refParams
+	var err error
+	var ticketJob string // non-empty → deploy-ticket authorization, claim on success
+	if rawTicket := strings.TrimSpace(r.Header.Get("X-Holodex-Deploy-Ticket")); rawTicket != "" {
+		t, terr := parseDeployTicketHeader(rawTicket, s.buildKey, time.Now())
+		if terr != nil {
+			http.Error(w, terr.Error(), http.StatusForbidden)
+			return
+		}
+		if s.jobs.deployTicketUsed(t.Job) {
+			http.Error(w, "deploy ticket already used", http.StatusForbidden)
+			return
+		}
+		p, err = refFieldsFromRequest(r, "deploy")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+		if p.Repo != t.Repo {
+			http.Error(w, "deploy ticket is for a different repository", http.StatusForbidden)
+			return
+		}
+		ticketJob = t.Job
+		log.Printf("ticket deploy %s@%s job=%s", t.Repo, p.SHA[:12], t.Job)
+	} else if p, err = refParamsFromRequest(r, s.buildKey, "deploy"); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
@@ -520,6 +545,9 @@ func (s *server) handleRefDeploy(w http.ResponseWriter, r *http.Request) {
 	status, body := s.deployVerifiedArchive(ap, archive)
 	if status == http.StatusOK {
 		body["sha"] = p.SHA
+		if ticketJob != "" {
+			s.jobs.claimDeployTicket(ticketJob)
+		}
 	}
 	writeJSON(w, status, body)
 }
@@ -606,4 +634,87 @@ func (js *jobStore) spendTicketUse(t ticket) error {
 	}
 	js.ticketUses[t.Job]++
 	return nil
+}
+
+// ── deploy tickets ──────────────────────────────────────────────────────────
+//
+// A deploy ticket completes the worker's ownership of a build's lifecycle:
+// signed by Vela at enqueue alongside the verify ticket, it lets the worker
+// deploy ITS OWN verified result — once, for one repository, and only with a
+// receipt proving the exact bytes passed the test gate. The worker still
+// never holds the build secret; authority is granted per-job at the moment a
+// human approved the request, which is where a deploy signature belongs.
+
+const deployTicketPrefix = "holodex-deploy-ticket-v1"
+
+type deployTicket struct {
+	Job  string
+	Repo string
+	Exp  int64
+}
+
+func (t deployTicket) canonical() string {
+	return strings.Join([]string{
+		deployTicketPrefix, t.Job, t.Repo, strconv.FormatInt(t.Exp, 10), "",
+	}, "\n")
+}
+
+func signDeployTicket(key []byte, t deployTicket) string {
+	mac := hmac.New(sha256.New, key)
+	_, _ = io.WriteString(mac, t.canonical())
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// parseDeployTicketHeader validates job:owner/repo:exp:sig.
+func parseDeployTicketHeader(raw string, key []byte, now time.Time) (deployTicket, error) {
+	parts := strings.Split(strings.TrimSpace(raw), ":")
+	if len(parts) != 4 {
+		return deployTicket{}, errors.New("bad deploy ticket format (job:owner/repo:exp:sig)")
+	}
+	exp, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil {
+		return deployTicket{}, errors.New("bad deploy ticket expiry")
+	}
+	t := deployTicket{Job: parts[0], Repo: parts[1], Exp: exp}
+	if t.Job == "" || len(t.Job) > 64 || strings.ContainsAny(t.Job, "\r\n:") {
+		return deployTicket{}, errors.New("bad deploy ticket job id")
+	}
+	if !repoRe.MatchString(t.Repo) {
+		return deployTicket{}, errors.New("bad deploy ticket repo")
+	}
+	if t.Exp < now.Unix() {
+		return deployTicket{}, errors.New("deploy ticket expired")
+	}
+	// Generous ceiling: expiry is replay protection, not queue scheduling — a
+	// build may legitimately wait hours behind others before its deploy.
+	if t.Exp > now.Unix()+48*3600 {
+		return deployTicket{}, errors.New("deploy ticket expiry too far out (max 48h)")
+	}
+	want, err := hex.DecodeString(parts[3])
+	if err != nil {
+		return deployTicket{}, errors.New("bad deploy ticket signature encoding")
+	}
+	mac := hmac.New(sha256.New, key)
+	_, _ = io.WriteString(mac, t.canonical())
+	if subtle.ConstantTimeCompare(want, mac.Sum(nil)) != 1 {
+		return deployTicket{}, errors.New("deploy ticket signature refused")
+	}
+	return t, nil
+}
+
+// claimDeployTicket enforces single use. Claim happens only after a
+// successful deploy, so a transient failure does not burn the grant.
+func (js *jobStore) deployTicketUsed(job string) bool {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return js.usedDeployTickets[job]
+}
+
+func (js *jobStore) claimDeployTicket(job string) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	if js.usedDeployTickets == nil {
+		js.usedDeployTickets = map[string]bool{}
+	}
+	js.usedDeployTickets[job] = true
 }
