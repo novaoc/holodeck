@@ -357,6 +357,7 @@ func (s *server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeMeta(m)
 	s.activity.Store(slug, time.Now()) // a fresh deploy holds its slot
+	s.reapSameName(m.Name, slug)
 	log.Printf("deployed %s (%s, %dKB)", slug, m.Kind, total/1024)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"url":     fmt.Sprintf("https://%s.%s/", slug, s.domain),
@@ -731,6 +732,24 @@ func (s *server) freeSlot() error {
 	s.writeMeta(*victim)
 	log.Printf("slot freed: %s put to sleep (idle %s)", victim.Slug, time.Since(victimAt).Round(time.Minute))
 	return nil
+}
+
+// reapSameName destroys every other app carrying the same display name. A
+// redeploy of "sandclock" replaces the old sandclock instead of stacking a
+// second 1GB Rails stack next to it — three stale copies once pushed the host
+// to 96% memory, which failed the foundation healthcheck inside every
+// verification build and wedged the whole deploy pipeline.
+func (s *server) reapSameName(name, keepSlug string) {
+	if strings.TrimSpace(name) == "" {
+		return
+	}
+	for _, m := range s.allMeta() {
+		if m.Slug == keepSlug || !strings.EqualFold(m.Name, name) {
+			continue
+		}
+		log.Printf("reaping %s: replaced by fresh deploy %s of %q", m.Slug, keepSlug, name)
+		s.destroy(m.Slug)
+	}
 }
 
 func (s *server) destroy(slug string) {

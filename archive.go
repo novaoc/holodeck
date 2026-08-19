@@ -442,6 +442,7 @@ func (s *server) deployVerifiedArchive(p archiveParams, archive string) (int, ma
 	}
 	s.writeMeta(m)
 	s.activity.Store(slug, time.Now())
+	s.reapSameName(m.Name, slug)
 	log.Printf("deployed archive %s (%s, %d files, %dKB)", slug, m.Kind, files, total/1024)
 	return http.StatusOK, map[string]any{
 		"url": fmt.Sprintf("https://%s.%s/", slug, s.domain), "slug": slug, "kind": m.Kind,
